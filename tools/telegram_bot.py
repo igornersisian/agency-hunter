@@ -176,14 +176,14 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     sent_total = sb.table("agency_outreach_messages").select("id", count="exact") \
         .eq("status", "sent").execute().count or 0
 
-    lines = ["*Agency Hunter stats*"]
+    lines = ["📊 Agency Hunter stats"]
     for s, n in counts.items():
         if n:
-            lines.append(f"{s}: {n}")
+            lines.append(f"  {s}: {n}")
     lines.append("")
-    lines.append(f"drafts ready: {drafts_ready}")
-    lines.append(f"sent total:   {sent_total}")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    lines.append(f"  drafts ready: {drafts_ready}")
+    lines.append(f"  sent total:   {sent_total}")
+    await update.message.reply_text("\n".join(lines))
 
 
 async def cmd_threshold(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
