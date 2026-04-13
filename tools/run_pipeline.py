@@ -10,8 +10,7 @@ Phases:
     1. Dedup       — fold collisions
     2. Enrichment  — `discovered` → `enriched` (LLM extraction)
     3. Classify    — `enriched`   → `qualified` | `rejected`
-    4. Contacts    — `qualified`  → `contact_found` | `no_contact`
-    5. Drafting    — `contact_found` → `ready_to_send` | `no_hook_skip`
+    4. Drafting    — `qualified`  → `ready_to_send` | `no_hook_skip` | `no_contact`
 
 Sending is NOT part of the auto-pipeline. Drafts wait for manual
 /approve in the Telegram review UI. This is explicit per Igor's plan —
@@ -40,7 +39,6 @@ import discover_google_search
 import dedup_canonicalize
 import enrich_agency
 import classify_agency
-import find_contacts
 import draft_outreach
 
 logging.basicConfig(
@@ -51,7 +49,6 @@ logger = logging.getLogger(__name__)
 
 ENRICH_WORKERS = 5
 CLASSIFY_WORKERS = 5
-CONTACTS_WORKERS = 5
 DRAFT_WORKERS = 5
 
 
@@ -144,27 +141,9 @@ def _classify_phase() -> tuple[int, int]:
     return classified, qualified
 
 
-def _contacts_phase() -> int:
-    sb = get_supabase()
-    rows = sb.table("agency_agencies").select("id,enriched_data").eq("status", "qualified").execute().data or []
-    if not rows:
-        return 0
-
-    total_new = 0
-    with ThreadPoolExecutor(max_workers=CONTACTS_WORKERS) as pool:
-        futures = {pool.submit(find_contacts.find_for_agency, row["id"], row.get("enriched_data") or {}): row for row in rows}
-        for fut in as_completed(futures):
-            row = futures[fut]
-            try:
-                total_new += fut.result() or 0
-            except Exception as e:
-                logger.error(f"find_contacts failed for {row['id']}: {e}")
-    return total_new
-
-
 def _draft_phase() -> int:
     sb = get_supabase()
-    rows = sb.table("agency_agencies").select("id").eq("status", "contact_found").execute().data or []
+    rows = sb.table("agency_agencies").select("id").eq("status", "qualified").execute().data or []
     if not rows:
         return 0
 
@@ -208,10 +187,7 @@ def run_pipeline(skip_discovery: bool = False, country: str | None = None,
     summary["classified"] = classified
     summary["qualified"] = qualified
 
-    logger.info("Phase 4: contact discovery")
-    _contacts_phase()
-
-    logger.info("Phase 5: outreach drafting")
+    logger.info("Phase 4: outreach drafting")
     summary["drafts"] = _draft_phase()
 
     logger.info(f"Pipeline complete: {summary}")

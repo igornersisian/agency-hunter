@@ -76,6 +76,17 @@ _SYSTEM_PROMPT = (
     "- `case_studies` requires a title. URL/summary are optional.\n"
     "- `visible_emails` only contains addresses literally present in the "
     "text. No pattern guessing.\n"
+    "- `best_contact_email`: from visible_emails, pick the SINGLE best "
+    "address for a cold outreach email about contract work. Priority:\n"
+    "  1. Personal email of founder/owner/CEO (e.g. john@agency.com)\n"
+    "  2. contact@ or enquiries@ on the agency's own domain\n"
+    "  3. hello@ on the agency's own domain\n"
+    "  4. info@ on the agency's own domain\n"
+    "  5. Any other non-system address on the agency's domain\n"
+    "  Skip noreply@, no-reply@, careers@, jobs@, support@ (wrong audience). "
+    "  Skip emails on third-party domains (gmail.com, outlook.com) unless "
+    "  it's clearly the founder's personal email. Return null if no usable "
+    "  email exists.\n"
     "- `red_flag_notes` is where you can note concerns for the classifier "
     "later (e.g. 'no case studies since 2022', 'team page shows one "
     "person', 'enterprise-only language — says \"Fortune 500\"')."
@@ -96,6 +107,7 @@ _JSON_SCHEMA_HINT = (
     '  "country": "<ISO-3166 alpha-2|null>",\n'
     '  "case_studies": [{"title":"","url":"","summary":""}],\n'
     '  "visible_emails": ["..."],\n'
+    '  "best_contact_email": "<single best email for cold outreach or null>",\n'
     '  "team_members": [{"name":"","role":"","linkedin":""}],\n'
     '  "red_flag_notes": ["..."]\n'
     "}"

@@ -312,20 +312,45 @@ def _call_llm(enriched: dict, profile: dict, extra_feedback: str | None = None,
     return json.loads(response.choices[0].message.content)
 
 
-def _pick_primary_contact(sb, agency_id: str) -> dict | None:
-    """Pick the primary contact for this agency.
+def _pick_best_email(enriched: dict) -> str | None:
+    """Pick the best email for cold outreach from enriched_data.
 
-    Since pattern guessing was removed, every contact is
-    `email_status='scraped_visible'` (only what the site actually
-    publishes). All scraped contacts are flagged `is_primary=True`, so
-    we just sort by email string for deterministic selection and
-    return the first one.
+    Uses best_contact_email if the LLM already chose one during enrichment.
+    Falls back to a heuristic over visible_emails for older rows.
     """
-    rows = sb.table("agency_contacts").select("*").eq("agency_id", agency_id).execute().data or []
-    if not rows:
+    # LLM-chosen best contact (new enrichment flow)
+    best = (enriched.get("best_contact_email") or "").strip().lower()
+    if best and "@" in best:
+        return best
+
+    # Fallback heuristic for pre-existing enriched_data without best_contact_email
+    emails = [e.strip().lower() for e in (enriched.get("visible_emails") or []) if e and "@" in e]
+    if not emails:
         return None
-    rows.sort(key=lambda r: (r.get("email") or ""))
-    return rows[0]
+
+    _NON_SENDABLE = {"noreply", "no-reply", "donotreply", "do-not-reply", "mailer-daemon", "postmaster"}
+    _DEPRIORITIZE = {"careers", "jobs", "support", "hr", "recruiting", "billing", "abuse"}
+    emails = [e for e in emails if e.split("@")[0].lower() not in _NON_SENDABLE]
+    if not emails:
+        return None
+
+    def _score(email: str) -> int:
+        local = email.split("@")[0].lower()
+        if local in _DEPRIORITIZE:
+            return 0
+        if local in ("contact", "enquiries", "enquiry"):
+            return 80
+        if local == "hello":
+            return 70
+        if local == "info":
+            return 60
+        # Personal-looking email (not a role address) scores highest
+        if local not in ("hello", "info", "contact", "sales", "team", "admin", "office"):
+            return 90
+        return 50
+
+    emails.sort(key=_score, reverse=True)
+    return emails[0]
 
 
 def draft_for_agency(agency_id: str) -> int | None:
@@ -338,14 +363,14 @@ def draft_for_agency(agency_id: str) -> int | None:
         return None
     agency = agency[0]
 
-    contact = _pick_primary_contact(sb, agency_id)
-    if not contact:
+    enriched = agency.get("enriched_data") or {}
+    to_email = _pick_best_email(enriched)
+    if not to_email:
         logger.info(f"No contact for {agency_id} — marking no_contact")
         sb.table("agency_agencies").update({"status": "no_contact"}).eq("id", agency_id).execute()
         return None
 
     profile = get_profile() or {}
-    enriched = agency.get("enriched_data") or {}
     result = _call_llm(enriched, profile)
 
     opener = result.get("personalized_opener")
@@ -363,8 +388,7 @@ def draft_for_agency(agency_id: str) -> int | None:
 
     row = {
         "agency_id": agency_id,
-        "contact_id": contact["id"],
-        "to_email": contact["email"],
+        "to_email": to_email,
         "from_email": from_email,
         "subject": subject[:200],
         "body": body,
@@ -442,12 +466,12 @@ def regenerate(draft_id: int, feedback_text: str) -> int | None:
 
 
 def run_batch(limit: int = 20) -> int:
-    """Draft outreach for agencies in `status='contact_found'`."""
+    """Draft outreach for qualified agencies (contact selection is now inline)."""
     sb = get_supabase()
     rows = (
         sb.table("agency_agencies")
         .select("id")
-        .eq("status", "contact_found")
+        .eq("status", "qualified")
         .limit(limit)
         .execute()
         .data
