@@ -5,31 +5,23 @@ Loads `templates/cold_v1.md` and the agency's `enriched_data`, then calls
 OpenAI in JSON mode to produce ONLY:
     {subject_line, personalized_opener, hook_type, hook_reference}
 
-The final email body is assembled by substituting the opener into the
-template verbatim — **no other part of the template is touched**, not
-even whitespace. Igor explicitly wants the template shipped byte-for-byte
-below the opener.
+OPENER CONCEPT: Igor built an automated pipeline that scrapes, enriches,
+and scores agencies by stack fit. The opener tells the agency that this
+pipeline matched them and WHY (specific tool/service overlap). This is
+a flex — demonstrating automation skills TO an automation agency.
 
-The LLM contract requires the opener to reference one concrete thing the
-agency said about themselves (a service name, a case study title, a tool
-they mention using). If no such concrete hook exists, the tool returns
-None and flips the agency to `no_hook_skip` instead of drafting a weak
-email.
+SUBJECT LINE: simple and human — just tool names + "contract work/dev/
+contractor". E.g. "Contract dev — n8n + Make", "n8n contractor".
+No clickbait, no "flagged you", no "surfaced a match".
+
+The final email body is assembled by substituting the opener into the
+template verbatim — **no other part of the template is touched**.
 
 Regeneration:
     regenerate(draft_id, feedback_text) re-runs drafting with the prior
     opener and Igor's free-text feedback in the prompt, overwrites the
     row, increments `revision`, and persists `edit_feedback`.
     Used by the Telegram /edit flow.
-
-The full template is passed to the LLM as a READ-ONLY reference so the
-opener can flow naturally into the body's first line and avoid repeating
-facts already stated below. The LLM NEVER outputs the body — body is
-always assembled from disk via a pure `.replace()` in `_assemble_body`.
-
-The CAN-SPAM physical address footer is appended at send time in
-`send_email_gmail.py` (env-var driven, per-sender). The soft opt-out
-line lives verbatim inside `templates/cold_v1.md`.
 """
 
 from __future__ import annotations
@@ -64,206 +56,75 @@ def _assemble_body(opener: str) -> str:
 def _system_prompt(profile_text: str, template_text: str) -> str:
     return (
         "You write the OPENING ADDRESS of a cold email from Igor to one "
-        "specific AI-automation agency. Your opener is addressed TO the "
-        "agency and is ONLY about the agency — one concrete thing they "
-        "said about themselves on their own site.\n\n"
+        "specific AI-automation agency.\n\n"
 
-        "Everything below your opener is a fixed template (shown to you "
-        "in full further down). It is the second part of the same email "
-        "and ships verbatim. Your opener is the FIRST part; the template "
-        "is the CONTINUATION. Read the template carefully — your opener "
-        "MUST NOT repeat anything that already appears in it.\n\n"
+        "CONCEPT: Igor built an automated pipeline that scrapes, enriches, "
+        "and scores automation agencies by stack fit. The opener tells the "
+        "agency that this pipeline matched them — and WHY (specific tools "
+        "or services that overlap with Igor's stack). This is a flex: "
+        "he's demonstrating automation skills TO an automation agency.\n\n"
+
+        "Everything below your opener is a fixed template (shown further "
+        "down). Your opener is the FIRST part; the template is the "
+        "CONTINUATION. Your opener MUST NOT repeat anything in the "
+        "template.\n\n"
+
+        "OPENER FORMAT (1-2 sentences, pick one and fill in [concrete_detail]):\n"
+        '  "Built a pipeline that scrapes, enriches, and scores automation '
+        'agencies by stack fit — yours flagged because of [concrete_detail]. '
+        'Reaching out about contract work."\n'
+        '  "Wrote an AI pipeline that qualifies agencies by tool stack — '
+        'your [concrete_detail] is why it matched us. Reaching out about '
+        'contract work."\n'
+        '  "My agency-matching pipeline flagged your [concrete_detail] as a '
+        'stack overlap — reaching out about contract availability."\n'
+        '  "Built an outreach system that scores agencies by stack fit — '
+        'your [concrete_detail] is what surfaced you. Quick note about '
+        'contract work."\n\n'
+
+        "CONCRETE_DETAIL RULES:\n"
+        "- Pick the strongest overlap between the agency's tools/services "
+        "and Igor's stack: n8n, make.com, zapier, OpenAI, Anthropic, "
+        "Supabase, WeWeb, Webflow, Retool, Bubble, Airtable, LangChain, "
+        "Claude Code.\n"
+        "- Priority: tool_match (agency lists a tool Igor knows) > "
+        "service_match (agency offers a service Igor ships — RAG, "
+        "multi-agent AI, workflow automation, no-code apps) > other.\n"
+        "- Keep it brief: 'your n8n + Make work', 'your LangChain and "
+        "Anthropic stack', 'your RAG implementation focus'.\n"
+        "- Only reference things ACTUALLY in enriched_data. Never invent.\n"
+        "- If no honest overlap exists, return null for opener and "
+        "subject.\n\n"
+
+        "SUBJECT LINE RULES:\n"
+        "- ≤ 60 characters, simple, human-readable.\n"
+        "- Format: pick one of these patterns with the matching tools:\n"
+        '  "Contract dev — n8n + Make"\n'
+        '  "Reaching out — LangChain + OpenAI"\n'
+        '  "n8n + Supabase contractor"\n'
+        '  "n8n — contract work"\n'
+        '  "Contract work — Anthropic + n8n"\n'
+        "- NO clickbait, NO emoji, NO fake 'Re:', NO phrases like "
+        "'caught my pipeline', 'surfaced a match', 'flagged you'.\n"
+        "- Just tools/services + 'contract work/dev/contractor'.\n\n"
 
         "HARD RULES:\n"
-        "- HOOK SELECTION is the most important decision you make. "
-        "Before writing a single word, pick the hook that will anchor "
-        "the opener using this STRICT priority order. Always pick the "
-        "highest-priority hook that exists in enriched_data — do not "
-        "skip a higher-priority hook just because a lower one feels "
-        "more colourful.\n"
-        "    1. tool_match — the agency lists a specific tool in "
-        "enriched_data.tools (or mentions it in services/case "
-        "studies) that ALSO appears in IGOR'S PROFILE below. This is "
-        "the STRONGEST hook because it's a real skill match. "
-        "Example: agency lists n8n, Igor's profile lists n8n → n8n "
-        "tool_match. Use this whenever it exists.\n"
-        "    2. service_match — a named TECHNICAL service the agency "
-        "offers that matches what Igor actually builds (workflow "
-        "automation, RAG, multi-agent AI, no-code web apps, Supabase "
-        "backends, AI integrations). Must be a GENERAL technical "
-        "service, NOT a vertical/industry specialisation.\n"
-        "    3. case_study — ONLY ALLOWED when the case study is "
-        "framed around a STACK or TECHNICAL approach that Igor "
-        "actually knows (\"we built an n8n workflow for X\", \"our "
-        "Supabase RAG implementation\"). STRICTLY FORBIDDEN when the "
-        "case study is framed around a vertical, industry, or "
-        "client-type (\"law firm document processing\", \"e-commerce "
-        "customer service\", \"manufacturing real-time visibility\", "
-        "\"healthcare patient intake\"). Igor has NO vertical "
-        "experience in legal, healthcare, finance, e-commerce, or "
-        "manufacturing — anchoring on such a case study would "
-        "misrepresent him as an industry specialist he is not.\n"
-        "    4. blog — a technical blog post whose topic is in "
-        "Igor's stack.\n"
-        "    5. other — last resort only.\n"
-        "  If the agency has n8n in their tools AND a legal case "
-        "study, pick the n8n tool_match — NEVER the legal case "
-        "study.\n"
-        "- CREDIBILITY CHECK (INVIOLABLE). Before finalising, verify "
-        "the hook represents Igor HONESTLY against IGOR'S PROFILE "
-        "below:\n"
-        "    • tool_match: the tool must appear in Igor's profile "
-        "(check his stack/tools/projects in the PROFILE section). "
-        "Anchoring on a tool Igor doesn't know is an automatic "
-        "fail.\n"
-        "    • service_match: the service must map to something "
-        "Igor actually builds according to his profile. No "
-        "anchoring on services Igor hasn't demonstrated.\n"
-        "    • case_study: only technical/stack case studies whose "
-        "stack overlaps Igor's profile are allowed. Vertical case "
-        "studies are banned full stop — even with a pointer idiom "
-        "like \"— that's exactly my lane\", framing Igor next to a "
-        "legal or healthcare case study IS dishonest.\n"
-        "  If no honest, profile-matching hook exists in "
-        "enriched_data, return `null` for both `personalized_opener` "
-        "and `subject_line` and set `hook_type` to `other`. Igor "
-        "would rather skip this agency than send an opener that "
-        "pretends he does work he doesn't do. A dishonest hook is "
-        "an AUTOMATIC FAIL regardless of how good the prose is.\n"
-        "- No generic openers ('I love your work', 'your agency is "
-        "impressive'). Never invent details that are not in "
-        "enriched_data.\n"
-        "- Voice: direct, conversational, never salesy, never buzzwords "
-        "like 'synergy', 'leverage', 'disrupt', 'revolutionize'. Use "
-        "natural capitalization — sentence-initial caps, proper nouns "
-        "(company names, person names, product names like n8n/Supabase) "
-        "capitalized as they normally are. Casual tone is about "
-        "directness, not about lowercasing everything.\n"
-        "- Igor's INTENT must be visible in the very first sentence: he "
-        "is reaching out about contract work. Pure praise without an "
-        "ask reads like a fan letter or a questionnaire answer — the "
-        "reader should know WHY you're writing from the first few "
-        "words.\n"
-        "- The opener POINTS at Igor's relevance; the template body "
-        "DESCRIBES it. Think of them as two halves of one handoff. The "
-        "opener teases — it cues the reader that Igor is in the same "
-        "space as the agency, without telling them what that space is. "
-        "The template below does the telling: stack, examples, links. "
-        "You have Igor's full profile AND the verbatim template in your "
-        "context — use both to pick a pointer that makes the reader "
-        "want to read the next line, without restating what the next "
-        "line already says.\n"
-        "- Addressing the agency. DEFAULT form is SALUTATION + "
-        "second person: start with a short vocative greeting that "
-        "includes the agency name, then continue with 'your' / "
-        "'you' for the rest of the opener. Vary the exact greeting "
-        "across generations so it never feels templated — pick any "
-        "of these natural shapes (or a close paraphrase):\n"
-        "    • 'Hi Spruik team —'\n"
-        "    • 'Spruik team —'\n"
-        "    • 'Hey Spruik,'\n"
-        "    • 'Hi Spruik —'\n"
-        "    • 'Hello Spruik team,'\n"
-        "  Never 'Dear …'. Occasionally (≈1 in 4 generations) drop "
-        "the salutation entirely and open directly with a "
-        "second-person fragment — 'Saw your n8n consulting work …' "
-        "or 'your n8n consulting, exactly my lane …' — for "
-        "variety. The salutation form is the baseline; the "
-        "name-less form is the occasional break, not the norm.\n"
-        "  NEVER use the third-person possessive ('Spruik's X', "
-        "'Acme's X') — that reads as if you're describing them to "
-        "someone else instead of writing TO them. 'Hi Spruik team "
-        "—' IS a direct address (valid); 'Spruik's X' is NOT.\n"
-        "- Pointer-idiom format. The pointer MUST appear either as a "
-        "fragment after a dash or comma, or as a clause starting with "
-        "'that's' / 'exactly'. It MUST NOT appear as a subject "
-        "complement via 'is' — equating the agency's product with a "
-        "work-category reads as strained grammar ('your consulting IS "
-        "my kind of work' parses the same as 'your product IS my "
-        "beverage'). Pick one idiom per generation, vary across "
-        "generations:\n"
-        "    • \"— that's my lane\"\n"
-        "    • \"— that's exactly my kind of work\"\n"
-        "    • \"— exactly what I do\"\n"
-        "    • \"— same space I build in\"\n"
-        "    • \"— that's my wheelhouse\"\n"
-        "    • \"— the kind of work I'm looking for\"\n"
-        "    • \", which is where I'd want to contribute\"\n"
-        "    • \"— that's the kind of thing I work on\"\n"
-        "  Feel free to paraphrase — just keep the fragment-or-"
-        "\"that's\" structure and the pointer-not-description "
-        "character.\n"
-        "- The template's very first body line is 'I build production "
-        "systems using no-code (n8n, WeWeb, Supabase) and AI-assisted "
-        "development…'. Your opener must NOT paraphrase this in any "
-        "form. Side-by-side contrast:\n"
-        "    GOOD: \"Saw your n8n consulting work — that's exactly my "
-        "lane. Reaching out about contract work.\"\n"
-        "    GOOD: \"n8n consulting is exactly what I do — reaching "
-        "out about contract work.\"\n"
-        "    GOOD: \"Hi Spruik team — your n8n consulting and "
-        "marketing automation, exactly the kind of work I do. "
-        "Reaching out about contract work.\" (salutation form — "
-        "valid way to include the agency name without using a "
-        "possessive; pointer idiom attached as a fragment after "
-        "comma, NOT via 'is')\n"
-        "    BAD:  \"Spruik's n8n consulting and marketing automation "
-        "— the kind of work I'm looking for.\" (two failures: (1) "
-        "third-person possessive 'Spruik's' — when the agency name "
-        "needs to appear in the opener, use salutation form 'Hi "
-        "Spruik team —' instead; (2) the intent clause 'Reaching out "
-        "about contract work' is MISSING — the intent MUST always be "
-        "present in the opener, regardless of any other feedback or "
-        "constraints)\n"
-        "    BAD:  \"Spruik's n8n consulting service is my kind of "
-        "work. Reaching out about contract work.\" (two failures: "
-        "third-person 'Spruik's' instead of 'your' or salutation; "
-        "AND 'is my kind of work' equates the product with a work "
-        "category — use '— my kind of work' as a fragment, or "
-        "\"that's my kind of work\" with an explicit 'that's', never "
-        "'X is my kind of work')\n"
-        "    BAD:  \"Saw Spruik's n8n consulting work since I have "
-        "experience with production automation systems.\" (echoes the "
-        "template body + third person)\n"
-        "    BAD:  \"Spruik's n8n consulting caught my eye as a match "
-        "for my expertise in no-code workflow building.\" (echoes + "
-        "third person)\n"
-        "  Failure modes across BAD examples: (1) third-person "
-        "'Spruik's' instead of second-person 'your' or dropping the "
-        "name; (2) the opener's second clause describes Igor's "
-        "experience/expertise/focus/work, echoing what the template "
-        "already states below; (3) pointer idiom attached via 'is' "
-        "(equation) instead of via a dash fragment or 'that's' "
-        "clause.\n"
-        "- Vary structure every generation. Do not anchor on a single "
-        "opening verb ('saw…', 'reaching out…', \"Spruik's … caught my "
-        "eye\") or pointer idiom across consecutive calls. Different "
-        "agencies deserve different framings depending on which "
-        "concrete hook you pick from their enriched_data. Producing "
-        "multiple openers that start with the same 2-3 words is a "
-        "failure.\n"
-        "- Subject line ≤ 60 characters, no clickbait, no emoji, no fake "
-        "'Re:'. The subject should reference the same concrete hook the "
-        "opener uses, so the reader sees continuity.\n\n"
+        "- Never use third-person possessive ('Agency's X'). Use 'your'.\n"
+        "- Igor's intent (contract work) must be in the opener.\n"
+        "- Don't paraphrase the template body.\n"
+        "- Voice: direct, conversational, no buzzwords.\n\n"
 
-        f"IGOR'S PROFILE (what he's actually built):\n{profile_text}\n\n"
+        f"IGOR'S PROFILE:\n{profile_text}\n\n"
 
-        "FULL EMAIL TEMPLATE (READ-ONLY — what will actually be sent):\n"
-        "Below is the exact body that will ship. The `{personalized_opener}` "
-        "placeholder is substituted with your opener via a deterministic "
-        "string.replace on the server. You NEVER output the body — you only "
-        "output opener + subject. Use this purely as context so your opener "
-        "flows naturally into the first body line and so you don't repeat "
-        "anything already written below.\n"
+        "FULL EMAIL TEMPLATE (READ-ONLY context):\n"
         f"---BEGIN TEMPLATE---\n{template_text}\n---END TEMPLATE---\n\n"
 
         "Return ONLY this JSON:\n"
         "{\n"
         '  "subject_line": "<≤ 60 chars or null>",\n'
         '  "personalized_opener": "<1-2 sentences or null>",\n'
-        '  "hook_type": "case_study|service|blog|tool_match|other",\n'
-        '  "hook_reference": "<the exact string from enriched_data you used, '
-        'or null if no concrete hook was found>"\n'
+        '  "hook_type": "tool_match|service|other",\n'
+        '  "hook_reference": "<tools/services from enriched_data that matched>"\n'
         "}"
     )
 
@@ -280,25 +141,9 @@ def _call_llm(enriched: dict, profile: dict, extra_feedback: str | None = None,
     if extra_feedback:
         user_content += (
             f"\n\nIGOR'S FEEDBACK ON THE PRIOR DRAFT:\n{extra_feedback}\n"
-            "Apply this feedback literally. If he says shorter, make it "
-            "shorter. If he says less formal, drop formality. Do not "
-            "argue.\n\n"
-            "BUT: the HARD RULES in the system prompt are INVIOLABLE. "
-            "Applying feedback must NOT cause you to drop a hard rule. "
-            "In particular:\n"
-            "- The INTENT clause ('Reaching out about contract work' or "
-            "equivalent) MUST remain visible in the first sentence, even "
-            "if the feedback is silent about it. If the prior opener had "
-            "the intent clause and your regenerated opener doesn't, you "
-            "have failed the task.\n"
-            "- Third-person possessive ('Spruik's X') remains forbidden. "
-            "If the feedback asks to add the agency name in the opener, "
-            "use the SALUTATION form ('Hi Spruik team —', 'Spruik team "
-            "—') instead of the possessive. Never 'Spruik's X'.\n"
-            "- The pointer idiom must still be a fragment or 'that's' "
-            "clause, never 'X is my kind of work'.\n"
-            "If feedback and hard rules appear to conflict, find a form "
-            "that satisfies both."
+            "Apply this feedback literally. Keep the pipeline-hook opener "
+            "format and intent clause ('Reaching out about contract work'). "
+            "Never use third-person possessive ('Agency's X')."
         )
 
     response = chat_completion(
