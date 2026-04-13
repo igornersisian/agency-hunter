@@ -1,0 +1,17 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.tmp/
+.git/
+.gitignore
+credentials.json
+token.json
+gmail_credentials.json
+gmail_token.json
+*.log
+.DS_Store
+CLAUDE.md
+workflows/
+.claude/
