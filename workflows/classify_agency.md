@@ -30,7 +30,7 @@ Chain-of-thought pros/cons ground every score.
 Sub-score dimensions and caps (sum to 100, no penalties):
 | Dimension | Max | Meaning |
 |---|---|---|
-| tool_alignment | 40 | Overlap with Igor's n8n/make/zapier/openai/anthropic/supabase/weweb stack. 10 per clear match. |
+| tool_alignment | 40 | Overlap with Igor's n8n/make/zapier/openai/anthropic/supabase/weweb stack. 10 per clear match. +10-15 implied alignment when agency offers AI/automation/no-code services with no evidence of trad-code approach. |
 | service_match  | 30 | Services map to what Igor has shipped (RAG, multi-agent, automation, no-code full-stack) |
 | market_fit     | 15 | Agency in one of Igor's target countries |
 | engagement_fit | 15 | **Default 15 — assume remote-friendly.** Drop to 0 ONLY on explicit offline-only language |
