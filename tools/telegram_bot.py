@@ -304,10 +304,10 @@ def _fetch_next_draft() -> tuple[dict | None, dict | None]:
     return draft, (agency_rows[0] if agency_rows else None)
 
 
-async def cmd_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Unified review queue: first surfaces ready_to_send drafts, then
-    falls through to no_contact agencies waiting for a manual email.
-    One command walks the whole backlog."""
+async def _send_next_review(reply_target) -> None:
+    """Send the next review card to the given target (update.message or
+    query.message — both expose reply_text). Used by /review and
+    auto-advance after approve/reject."""
     draft, agency = _fetch_next_draft()
     if draft and agency:
         keyboard = InlineKeyboardMarkup([[
@@ -315,21 +315,20 @@ async def cmd_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             InlineKeyboardButton("❌ Reject",  callback_data=f"reject:{draft['id']}"),
             InlineKeyboardButton("✏️ Edit",    callback_data=f"edit:{draft['id']}"),
         ]])
-        await update.message.reply_text(
+        await reply_target.reply_text(
             _fmt_draft_card(draft, agency),
             parse_mode="Markdown",
             reply_markup=keyboard,
         )
         return
 
-    # No drafts — check no_contact backlog.
     nc_agency = _fetch_next_no_contact()
     if nc_agency:
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("➕ Add email", callback_data=f"nc_add_email:{nc_agency['id']}"),
             InlineKeyboardButton("❌ Reject",    callback_data=f"nc_reject:{nc_agency['id']}"),
         ]])
-        await update.message.reply_text(
+        await reply_target.reply_text(
             "No drafts ready. Next agency with no scraped email:\n\n"
             + _fmt_no_contact_card(nc_agency),
             parse_mode="Markdown",
@@ -338,9 +337,15 @@ async def cmd_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
 
-    await update.message.reply_text(
+    await reply_target.reply_text(
         "Nothing to review — no ready drafts and no no-contact agencies waiting."
     )
+
+
+async def cmd_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Unified review queue: first surfaces ready_to_send drafts, then
+    falls through to no_contact agencies waiting for a manual email."""
+    await _send_next_review(update.message)
 
 
 async def _do_approve(draft_id: int) -> str:
@@ -509,9 +514,11 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if action == "approve":
         msg = await _do_approve(int(target))
         await query.message.reply_text(msg)
+        await _send_next_review(query.message)
     elif action == "reject":
         msg = await _do_reject(int(target))
         await query.message.reply_text(msg)
+        await _send_next_review(query.message)
     elif action == "edit":
         _chat_pending[query.message.chat_id] = ("edit_feedback", int(target))
         await query.message.reply_text(
@@ -527,6 +534,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif action == "nc_reject":
         msg = await _do_nc_reject(target)
         await query.message.reply_text(msg)
+        await _send_next_review(query.message)
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
