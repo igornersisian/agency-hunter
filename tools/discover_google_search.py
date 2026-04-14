@@ -40,6 +40,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from urllib.parse import urlparse
+
 from common.apify_runner import run_and_collect
 from common.domain_utils import canonical_domain, is_directory_domain
 from common.supabase_client import get_supabase
@@ -115,11 +117,21 @@ def _flatten_serp(raw_items: list[dict], query_country_map: dict[str, str]) -> l
             if is_directory_domain(domain):
                 continue
 
+            # Normalize website_url to the homepage. Google often returns
+            # a deep link (blog post, case study page) because that's the
+            # page that matched the query — but the agency's actual
+            # website_url should be their root. The deep link is kept in
+            # source_url for trace-back.
+            parsed = urlparse(url)
+            netloc = parsed.netloc or domain
+            scheme = parsed.scheme or "https"
+            homepage_url = f"{scheme}://{netloc}/"
+
             candidates.append({
                 "id": domain,
                 "name": title or domain,
                 "domain": domain,
-                "website_url": url,
+                "website_url": homepage_url,
                 "country": country_code,
                 "short_description": description[:500],
                 "source_channel": CHANNEL,
