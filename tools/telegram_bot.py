@@ -159,30 +159,45 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     sb = get_supabase()
-    statuses = [
+
+    # Agency-level pipeline (one row per agency)
+    agency_statuses = [
         "discovered", "enriching", "enriched",
         "classifying", "qualified", "rejected",
         "contact_found", "no_contact",
-        "ready_to_send", "sent", "previously_contacted",
-        "no_hook_skip", "enrich_failed", "classify_failed",
+        "ready_to_send", "scheduled", "sent",
+        "previously_contacted", "no_hook_skip",
+        "enrich_failed", "classify_failed",
     ]
-    counts: dict[str, int] = {}
-    for s in statuses:
+    agency_counts: dict[str, int] = {}
+    for s in agency_statuses:
         r = sb.table("agency_agencies").select("id", count="exact").eq("status", s).execute()
-        counts[s] = r.count or 0
+        agency_counts[s] = r.count or 0
 
-    drafts_ready = sb.table("agency_outreach_messages").select("id", count="exact") \
-        .eq("status", "ready_to_send").execute().count or 0
-    sent_total = sb.table("agency_outreach_messages").select("id", count="exact") \
-        .eq("status", "sent").execute().count or 0
+    # Draft-level pipeline (one row per outreach message; an agency can
+    # have several drafts across revisions or re-drafts)
+    def _draft_count(status: str) -> int:
+        return sb.table("agency_outreach_messages").select("id", count="exact") \
+            .eq("status", status).execute().count or 0
 
-    lines = ["📊 Agency Hunter stats"]
-    for s, n in counts.items():
+    drafts_ready     = _draft_count("ready_to_send")
+    drafts_scheduled = _draft_count("scheduled")
+    drafts_sent      = _draft_count("sent")
+    drafts_rejected  = _draft_count("rejected")
+
+    lines = ["📊 Agency Hunter stats", "", "AGENCIES (pipeline state)"]
+    for s, n in agency_counts.items():
         if n:
             lines.append(f"  {s}: {n}")
+
     lines.append("")
-    lines.append(f"  drafts ready: {drafts_ready}")
-    lines.append(f"  sent total:   {sent_total}")
+    lines.append("DRAFTS (one agency can have several)")
+    lines.append(f"  waiting for your review:   {drafts_ready}")
+    lines.append(f"  approved, awaiting send:   {drafts_scheduled}")
+    lines.append(f"  sent:                      {drafts_sent}")
+    if drafts_rejected:
+        lines.append(f"  rejected:                  {drafts_rejected}")
+
     await update.message.reply_text("\n".join(lines))
 
 
@@ -231,8 +246,22 @@ async def cmd_countries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 # Review / approve / reject / edit
 # ---------------------------------------------------------------------------
 
+def _as_dict(value) -> dict:
+    """Supabase JSONB usually comes back as dict, but rows written with
+    json.dumps land as a string — normalize both."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
 def _fmt_draft_card(draft: dict, agency: dict) -> str:
-    breakdown = agency.get("fit_breakdown") or {}
+    breakdown = _as_dict(agency.get("fit_breakdown"))
     pros = breakdown.get("pros") or []
     cons = breakdown.get("cons") or []
 
@@ -544,11 +573,11 @@ def _fetch_next_no_contact() -> dict | None:
 
 
 def _fmt_no_contact_card(agency: dict) -> str:
-    breakdown = agency.get("fit_breakdown") or {}
+    breakdown = _as_dict(agency.get("fit_breakdown"))
     pros = breakdown.get("pros") or []
     pros_block = "\n".join(f"  + {p}" for p in pros[:4]) or "  (none)"
 
-    enriched = agency.get("enriched_data") or {}
+    enriched = _as_dict(agency.get("enriched_data"))
     tools = ", ".join((enriched.get("tools") or [])[:6]) or "—"
     services = ", ".join((enriched.get("services") or [])[:4]) or "—"
 
