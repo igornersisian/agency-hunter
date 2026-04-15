@@ -1,22 +1,23 @@
 """
 Send-window helper for the outreach scheduler.
 
-Policy (Igor, 2026-04-12):
-    - Window:   Mon-Fri 09:00-17:00 **recipient-local time**
+Policy (Igor, 2026-04-15):
+    - Window:   Mon-Fri 16:00-22:00 **sender-local time** (Asia/Bangkok, GMT+7)
     - Spacing:  random 5-20 minutes between consecutive sends (global)
     - Overflow: if the computed slot is outside the window or on a
-                weekend, roll forward to the next Mon-Fri 09:00 local.
+                weekend, roll forward to the next Mon-Fri 16:00 local.
 
-Each agency carries an ISO-3166 alpha-2 country code from classification.
-`country_timezone()` maps that to a zoneinfo key. Mapping is hand-curated
-for the 14 target countries — for US/CA/AU we pick one canonical
-metropolitan zone (most AI agencies cluster on the east coast). Anything
-off-list falls back to UTC, which is a safe Monday-morning fallback.
+Recipient timezone is intentionally ignored. Globally-scattered
+recipients were stretching the queue across days and starving Igor's
+actual approval throughput. One sender-side window keeps sends
+predictable and reply handling inside his working hours.
 
 The scheduler calls `compute_next_slot(country, last_scheduled_utc)` to
-pick the next `scheduled_for` value. `last_scheduled_utc` is the
-currently-latest slot in the queue — the new slot lands 5-20 minutes
-later, advanced forward into the window as needed.
+pick the next `scheduled_for` value. `country` is accepted for
+signature compatibility but no longer affects the slot.
+`last_scheduled_utc` is the currently-latest slot in the queue — the
+new slot lands 5-20 minutes later, advanced forward into the window as
+needed.
 
 Stateless module, no DB access. Pass in the data you have.
 """
@@ -27,47 +28,11 @@ import random
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-# Canonical zone per target country. For federated countries (US, CA, AU)
-# we pick one time zone per country — cold-outreach timing doesn't need
-# city-level precision, and most AI/automation agencies cluster on a
-# single coast anyway (US east, AU east, CA east).
-_COUNTRY_TZ = {
-    # Original 14
-    "US": "America/New_York",
-    "CA": "America/Toronto",
-    "GB": "Europe/London",
-    "IE": "Europe/Dublin",
-    "DE": "Europe/Berlin",
-    "AT": "Europe/Vienna",
-    "CH": "Europe/Zurich",
-    "NL": "Europe/Amsterdam",
-    "SE": "Europe/Stockholm",
-    "NO": "Europe/Oslo",
-    "DK": "Europe/Copenhagen",
-    "FI": "Europe/Helsinki",
-    "AU": "Australia/Sydney",
-    "NZ": "Pacific/Auckland",
-    # Expansion 2026-04 — matches serp_queries.json countries
-    "SG": "Asia/Singapore",
-    "IL": "Asia/Jerusalem",
-    "AE": "Asia/Dubai",
-    "ZA": "Africa/Johannesburg",
-    "BE": "Europe/Brussels",
-    "LU": "Europe/Luxembourg",
-    "EE": "Europe/Tallinn",
-    "PL": "Europe/Warsaw",
-    "ES": "Europe/Madrid",
-    "PT": "Europe/Lisbon",
-    "MX": "America/Mexico_City",
-    "CO": "America/Bogota",
-    "AR": "America/Argentina/Buenos_Aires",
-    "BR": "America/Sao_Paulo",
-    "UY": "America/Montevideo",
-}
+_SENDER_TZ = ZoneInfo("Asia/Bangkok")  # GMT+7, no DST
 
-# Mon-Fri 09:00-17:00
-_WINDOW_START_HOUR = 9
-_WINDOW_END_HOUR = 17  # exclusive; last valid send minute is 16:59
+# Mon-Fri 16:00-22:00 sender-local
+_WINDOW_START_HOUR = 16
+_WINDOW_END_HOUR = 22  # exclusive; last valid send minute is 21:59
 _WEEKDAYS = (0, 1, 2, 3, 4)  # Mon-Fri (Python weekday: Mon=0)
 
 # Random spacing, minutes
@@ -76,11 +41,9 @@ _SPACING_MAX = 20
 
 
 def country_timezone(country: str | None) -> ZoneInfo:
-    """Return the canonical recipient time zone for a 2-letter country,
-    or UTC as a safe fallback for unknown/missing countries."""
-    if not country:
-        return ZoneInfo("UTC")
-    return ZoneInfo(_COUNTRY_TZ.get(country.upper(), "UTC"))
+    """Deprecated. Kept for import compatibility; sender-side window
+    doesn't use recipient tz. Always returns the sender zone."""
+    return _SENDER_TZ
 
 
 def _roll_into_window(local_dt: datetime) -> datetime:
@@ -97,7 +60,7 @@ def _roll_into_window(local_dt: datetime) -> datetime:
             return dt
 
         if not weekday_ok:
-            # Weekend — jump to Monday 09:00 local
+            # Weekend — jump to Monday start-of-window local
             days_to_monday = (7 - dt.weekday()) % 7
             if days_to_monday == 0:  # already Monday but still failed time check
                 days_to_monday = 0
@@ -110,7 +73,7 @@ def _roll_into_window(local_dt: datetime) -> datetime:
         if dt.hour < _WINDOW_START_HOUR:
             dt = dt.replace(hour=_WINDOW_START_HOUR, minute=0, second=0, microsecond=0)
             continue
-        # After window → move to next day 09:00 and re-check (may land on weekend)
+        # After window → move to next day start-of-window and re-check (may land on weekend)
         dt = (dt + timedelta(days=1)).replace(
             hour=_WINDOW_START_HOUR, minute=0, second=0, microsecond=0
         )
@@ -125,7 +88,8 @@ def compute_next_slot(
     """Pick the next `scheduled_for` timestamp for a draft being queued.
 
     Args:
-        country: ISO-3166 alpha-2 of the recipient agency.
+        country: Accepted for signature compatibility; ignored. The
+            window is sender-local (Asia/Bangkok), not recipient-local.
         last_scheduled_utc: UTC timestamp of the most recently queued
             outreach (global max across all pending sends). Used to
             enforce the random 5-20 min spacing. None when the queue is
@@ -137,6 +101,7 @@ def compute_next_slot(
     Returns:
         UTC tz-aware datetime at which this draft should be sent.
     """
+    del country  # intentionally unused; kept for call-site compatibility
     rng = rng or random
     now_utc = now_utc or datetime.now(timezone.utc)
 
@@ -147,9 +112,8 @@ def compute_next_slot(
     else:
         earliest_utc = max(now_utc, last_scheduled_utc + spacing)
 
-    # Convert to recipient-local and roll into the window
-    tz = country_timezone(country)
-    local = earliest_utc.astimezone(tz)
+    # Convert to sender-local and roll into the window
+    local = earliest_utc.astimezone(_SENDER_TZ)
     local_in_window = _roll_into_window(local)
 
     # Back to UTC for storage
