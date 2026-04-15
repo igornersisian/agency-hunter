@@ -842,6 +842,37 @@ async def scheduler_tick(context: ContextTypes.DEFAULT_TYPE) -> None:
         else:
             reason = result.get("reason", "unknown")
             logger.warning(f"scheduler tick: draft {draft_id} skipped — {reason}")
+
+            # Daily cap is self-inflicted and predictable — push the draft
+            # past the end of today's send window so compute_next_slot lands
+            # it on the next valid weekday, and stay silent. Without this
+            # the draft remains overdue and scheduler_tick retries every
+            # 30s, each retry pinging Telegram.
+            if reason == "daily_cap_reached":
+                from common.send_window import compute_next_slot, _SENDER_TZ
+
+                end_of_today_local = now_utc.astimezone(_SENDER_TZ).replace(
+                    hour=22, minute=0, second=0, microsecond=0
+                )
+                next_slot = compute_next_slot(
+                    None,
+                    last_scheduled_utc=None,
+                    now_utc=end_of_today_local.astimezone(timezone.utc),
+                )
+                try:
+                    sb.table("agency_outreach_messages").update({
+                        "scheduled_for": next_slot.isoformat(),
+                    }).eq("id", draft_id).execute()
+                    logger.info(
+                        f"scheduler tick: draft {draft_id} pushed to "
+                        f"{next_slot.astimezone(_SENDER_TZ).isoformat()} (cap hit)"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"scheduler tick: cap push failed for draft {draft_id} — {e}"
+                    )
+                continue
+
             if admin_chat_id:
                 try:
                     await context.bot.send_message(
