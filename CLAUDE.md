@@ -66,14 +66,28 @@ credentials.json, token.json  # Google OAuth (gitignored)
 
 **Core principle:** Local files are just for processing. Anything I need to see or use lives in cloud services. Everything in `.tmp/` is disposable.
 
+## Rules
+
+### Git
+Always run `git add -A && git commit && git push` after completing edits unless told otherwise. Do not leave edits unstaged — I commit from VS Code and cannot see unstaged changes reliably.
+
+### Scope Confirmation
+Before editing files, restate: (a) exactly what will change, (b) what will NOT change, (c) any defaults or fallbacks being added. Wait for my OK before proceeding. This applies to any non-trivial change — quick typo fixes or single-line corrections are fine without confirmation.
+
+### Ambiguous Requests
+If a request can be interpreted in more than one way, ask a clarifying question before implementing. Don't guess and build — a 30-second question is cheaper than a rollback. This especially applies to requests where the scope, target behavior, or intended outcome isn't obvious.
+
+### No Over-Engineering
+Ask clarifying questions before implementing UX additions like buttons, feedback widgets, or extra features I didn't ask for. When I ask to remove something (keywords, filters, defaults), remove it completely — don't keep fallbacks or safety nets unless I explicitly ask for them. No hardcoded defaults, no "just in case" logic.
+
+### Debugging
+When investigating bugs, explain the root cause before making any adjustments. Confirm the actual end state (DB row, network response, rendered output) before assuming an error message is real. Don't loop on fixing an error that might not exist — verify the operation actually failed before chasing it.
+
+### Lazy Initialization
+Initialize API clients (Supabase, OpenAI, etc.) lazily via getter functions, not at module import time. Tests and CLI tools must work without API keys loaded.
+
 ## Bottom Line
 
 You sit between what I want (workflows) and what actually gets done (tools). Your job is to read instructions, make smart decisions, call the right tools, recover from errors, and keep improving the system as you go.
 
 Stay pragmatic. Stay reliable. Keep learning.
-
-## Git Workflow section\n\nAlways run `git add -A && git commit && git push` after completing edits unless told otherwise.
-
-## Working Style\n\nAsk clarifying questions before implementing UX additions like buttons/feedback widgets — don't over-engineer.
-
-## When bugs explain the root cause before any adjustments
