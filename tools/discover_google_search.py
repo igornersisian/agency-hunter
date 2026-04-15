@@ -65,15 +65,40 @@ def _load_config() -> dict:
         return json.load(f)
 
 
-def _build_queries(cfg: dict, country_filter: str | None = None) -> list[tuple[str, str]]:
-    """Expand templates × countries → list of (query_string, country_code)."""
+def _build_queries(cfg: dict, mode: str = "countries",
+                   country_filter: str | None = None) -> list[tuple[str, str]]:
+    """Expand templates into (query_string, country_code) pairs.
+
+    Modes:
+      countries  — cfg["templates"] × cfg["countries"]; country_code from country
+      worldwide  — cfg["worldwide_templates"] as-is; country_code = "" (→ NULL in DB)
+      cities     — cfg["city_templates"] × cfg["cities"]; country_code from city's hub
+    """
     pairs: list[tuple[str, str]] = []
-    for country in cfg["countries"]:
-        if country_filter and country["code"] != country_filter.upper():
-            continue
-        for tpl in cfg["templates"]:
-            q = tpl.format(country_name=country["name"], country_code=country["code"])
-            pairs.append((q, country["code"]))
+
+    if mode == "countries":
+        for country in cfg["countries"]:
+            if country_filter and country["code"] != country_filter.upper():
+                continue
+            for tpl in cfg["templates"]:
+                q = tpl.format(country_name=country["name"], country_code=country["code"])
+                pairs.append((q, country["code"]))
+
+    elif mode == "worldwide":
+        for tpl in cfg.get("worldwide_templates", []):
+            pairs.append((tpl, ""))
+
+    elif mode == "cities":
+        for city in cfg.get("cities", []):
+            if country_filter and city["country_code"] != country_filter.upper():
+                continue
+            for tpl in cfg.get("city_templates", []):
+                q = tpl.format(city=city["city"])
+                pairs.append((q, city["country_code"]))
+
+    else:
+        raise ValueError(f"Unknown mode: {mode!r} (expected countries|worldwide|cities)")
+
     return pairs
 
 
@@ -213,10 +238,10 @@ def _record_run(status: str, candidates_found: int, new_agencies: int,
 
 
 def discover(country: str | None = None, max_queries: int | None = None,
-             dry_run: bool = False) -> list[dict]:
+             dry_run: bool = False, mode: str = "countries") -> list[dict]:
     """Run one discovery pass. Returns the list of candidate dicts found."""
     cfg = _load_config()
-    pairs = _build_queries(cfg, country_filter=country)
+    pairs = _build_queries(cfg, mode=mode, country_filter=country)
     if max_queries is not None:
         pairs = pairs[:max_queries]
     if not pairs:
@@ -244,7 +269,7 @@ def discover(country: str | None = None, max_queries: int | None = None,
 
     if dry_run:
         print(json.dumps(candidates[:20], ensure_ascii=False, indent=2))
-        _record_run("success", len(candidates), 0, metadata={"dry_run": True})
+        _record_run("success", len(candidates), 0, metadata={"dry_run": True, "mode": mode})
         return candidates
 
     new_count, total_sources = _persist(candidates)
@@ -254,7 +279,7 @@ def discover(country: str | None = None, max_queries: int | None = None,
         "success",
         candidates_found=len(candidates),
         new_agencies=new_count,
-        metadata={"queries": len(queries), "country": country},
+        metadata={"queries": len(queries), "country": country, "mode": mode},
     )
     return candidates
 
@@ -264,9 +289,16 @@ def main() -> None:
     parser.add_argument("--country", help="Restrict to one ISO-3166 alpha-2 code (e.g. NZ)")
     parser.add_argument("--max", type=int, help="Cap on total queries to run (for smoke tests)")
     parser.add_argument("--dry-run", action="store_true", help="Print candidates, don't write DB")
+    parser.add_argument(
+        "--mode",
+        choices=["countries", "worldwide", "cities"],
+        default="countries",
+        help="Query-building strategy (default: countries — original behavior)",
+    )
     args = parser.parse_args()
 
-    results = discover(country=args.country, max_queries=args.max, dry_run=args.dry_run)
+    results = discover(country=args.country, max_queries=args.max,
+                       dry_run=args.dry_run, mode=args.mode)
     logger.info(f"Done. {len(results)} candidates total.")
 
 

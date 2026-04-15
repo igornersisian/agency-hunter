@@ -43,6 +43,43 @@
     "\"rag implementation\" consulting \"{country_name}\"",
     "\"no-code agency\" \"{country_name}\""
   ],
+  "worldwide_templates": [
+    "\"ai integration\" agency",
+    "\"chatbot development\" agency",
+    "\"automation partner\" OR \"implementation partner\"",
+    "\"langchain\" consulting",
+    "\"llm integration\" agency",
+    "\"process automation\" agency",
+    "\"ai development agency\" remote",
+    "\"n8n consultant\"",
+    "\"n8n agency\"",
+    "\"make.com expert\" agency",
+    "\"ai automation agency\"",
+    "\"rag implementation\" consulting",
+    "ai automation freelance contractor",
+    "ai integration consultancy remote",
+    "workflow automation implementation partner"
+  ],
+  "city_templates": [
+    "\"ai automation agency\" \"{city}\"",
+    "\"n8n consultant\" \"{city}\"",
+    "\"chatbot development\" agency \"{city}\"",
+    "\"ai integration\" agency \"{city}\""
+  ],
+  "cities": [
+    {"city": "London", "country_code": "GB"},
+    {"city": "Berlin", "country_code": "DE"},
+    {"city": "Amsterdam", "country_code": "NL"},
+    {"city": "Barcelona", "country_code": "ES"},
+    {"city": "Lisbon", "country_code": "PT"},
+    {"city": "Dublin", "country_code": "IE"},
+    {"city": "Tallinn", "country_code": "EE"},
+    {"city": "Warsaw", "country_code": "PL"},
+    {"city": "New York", "country_code": "US"},
+    {"city": "San Francisco", "country_code": "US"},
+    {"city": "Austin", "country_code": "US"},
+    {"city": "Miami", "country_code": "US"}
+  ],
   "results_per_query": 50,
   "language": "en"
 }
