@@ -56,7 +56,7 @@ _NON_AGENCY_DOMAINS = {
     # --- Social / content / forum platforms ---
     "linkedin.com", "facebook.com", "twitter.com", "x.com", "instagram.com",
     "youtube.com", "wikipedia.org", "medium.com", "reddit.com", "quora.com",
-    "github.com", "tiktok.com", "pinterest.com",
+    "github.com", "tiktok.com", "pinterest.com", "dev.to",
 
     # --- Search engines ---
     "google.com", "bing.com", "duckduckgo.com",
@@ -100,6 +100,11 @@ _NON_AGENCY_DOMAINS = {
     "beam.ai", "futurumgroup.com", "glean.com", "informatica.com",
     "onetrust.com", "unified.to", "convex.systems", "five9.com",
     "decisions.com", "moxo.com",
+    # Found polluting worldwide-mode SERPs: AI/LLM frameworks, RPA
+    # vendors, ecommerce platforms, and SaaS that rank for
+    # "ai integration" / "automation partner" / "chatbot" queries.
+    "langchain.com", "shopify.com", "pandadoc.com", "appian.com",
+    "blueprism.com", "relevanceai.com", "qloo.com",
 
     # --- Ecommerce marketplaces ---
     "etsy.com", "amazon.com", "ebay.com", "alibaba.com",
