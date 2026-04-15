@@ -54,7 +54,6 @@
     "\"n8n consultant\"",
     "\"n8n agency\"",
     "\"make.com expert\" agency",
-    "\"ai automation agency\"",
     "\"rag implementation\" consulting",
     "ai automation freelance contractor",
     "ai integration consultancy remote",
@@ -80,6 +79,5 @@
     {"city": "Austin", "country_code": "US"},
     {"city": "Miami", "country_code": "US"}
   ],
-  "results_per_query": 50,
   "language": "en"
 }

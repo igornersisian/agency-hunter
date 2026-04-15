@@ -42,9 +42,11 @@ from dotenv import load_dotenv
 
 from urllib.parse import urlparse
 
+import httpx
+
 from common.apify_runner import run_and_collect
 from common.domain_utils import canonical_domain, is_directory_domain
-from common.supabase_client import get_supabase
+from common.supabase_client import get_supabase, reset_supabase
 
 load_dotenv()
 
@@ -102,22 +104,26 @@ def _build_queries(cfg: dict, mode: str = "countries",
     return pairs
 
 
-def _run_apify(queries: list[str], results_per_query: int, language: str) -> list[dict]:
-    """Call the Apify Google search scraper with a batch of queries."""
+def _run_apify(queries: list[str], language: str, max_pages: int = 50) -> list[dict]:
+    """Call the Apify Google search scraper with a batch of queries.
+
+    Google's 2024 SERP change capped organic results at 10/page, and the
+    actor IGNORES `resultsPerPage` since then — only `maxPagesPerQuery`
+    controls volume. Apify auto-stops on `hasNextPage: false` (Google's
+    "We've omitted some results" wall — typically page 30-40 for broad
+    queries, much earlier for narrow ones).
+    """
     actor_input = {
-        # apify/google-search-scraper accepts a newline-delimited string of queries
         "queries": "\n".join(queries),
-        "maxPagesPerQuery": 1,
-        "resultsPerPage": results_per_query,
+        "maxPagesPerQuery": max_pages,
         "mobileResults": False,
         "languageCode": language,
         "saveHtml": False,
         "saveHtmlToKeyValueStore": False,
     }
-    # 30 min — large multi-country runs (~290 queries) typically take
-    # 5-15 min through apify/google-search-scraper; 600s was too tight
-    # after the country-list expansion.
-    return run_and_collect(ACTOR_ID, actor_input, timeout_seconds=1800)
+    # Deep pagination: 50 pages × ~3s/page × N queries can take hours.
+    # 3h ceiling covers worldwide (15 q × 35 pages) and large city batches.
+    return run_and_collect(ACTOR_ID, actor_input, timeout_seconds=10800)
 
 
 def _flatten_serp(raw_items: list[dict], query_country_map: dict[str, str]) -> list[dict]:
@@ -191,8 +197,10 @@ def _persist(candidates: list[dict]) -> tuple[int, int]:
 
     sb = get_supabase()
     new_count = 0
+    source_count = 0
 
-    for c in candidates:
+    def _persist_one(client, c):
+        nonlocal new_count, source_count
         agency_row = {
             "id": c["id"],
             "name": c["name"],
@@ -205,9 +213,9 @@ def _persist(candidates: list[dict]) -> tuple[int, int]:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         # Insert only if missing — never overwrite an already-classified row
-        existing = sb.table("agency_agencies").select("id").eq("id", c["id"]).limit(1).execute()
+        existing = client.table("agency_agencies").select("id").eq("id", c["id"]).limit(1).execute()
         if not existing.data:
-            sb.table("agency_agencies").insert(agency_row).execute()
+            client.table("agency_agencies").insert(agency_row).execute()
             new_count += 1
 
         source_row = {
@@ -216,9 +224,18 @@ def _persist(candidates: list[dict]) -> tuple[int, int]:
             "source_url": c["source_url"],
             "raw_payload": c["raw_payload"],
         }
-        sb.table("agency_sources").insert(source_row).execute()
+        client.table("agency_sources").insert(source_row).execute()
+        source_count += 1
 
-    return new_count, len(candidates)
+    for c in candidates:
+        try:
+            _persist_one(sb, c)
+        except (httpx.HTTPError, httpx.LocalProtocolError) as e:
+            logger.warning(f"httpx error on {c['id']}: {e}. Resetting client and retrying.")
+            sb = reset_supabase()
+            _persist_one(sb, c)
+
+    return new_count, source_count
 
 
 def _record_run(status: str, candidates_found: int, new_agencies: int,
@@ -255,7 +272,6 @@ def discover(country: str | None = None, max_queries: int | None = None,
     try:
         raw = _run_apify(
             queries,
-            results_per_query=cfg.get("results_per_query", 20),
             language=cfg.get("language", "en"),
         )
     except Exception as e:

@@ -23,3 +23,15 @@ def get_supabase() -> Client:
             os.environ["SUPABASE_SERVICE_ROLE_KEY"],
         )
     return _supabase
+
+
+def reset_supabase() -> Client:
+    """Drop the cached client and build a fresh one.
+
+    Needed when the underlying httpx HTTP/2 connection enters an invalid
+    state (observed after thousands of sequential inserts: RECV_WINDOW_UPDATE
+    in CLOSED). Callers catch the httpx error, reset, and retry.
+    """
+    global _supabase
+    _supabase = None
+    return get_supabase()

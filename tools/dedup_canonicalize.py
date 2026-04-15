@@ -31,10 +31,34 @@ from common.domain_utils import canonical_domain
 logger = logging.getLogger(__name__)
 
 
+def _fetch_all_agencies(sb) -> list[dict]:
+    """Fetch all agency rows via range pagination.
+
+    Supabase/PostgREST caps responses at 1000 rows by default. Without
+    pagination, dedup silently processes only the first 1000 of N.
+    """
+    page_size = 1000
+    offset = 0
+    out: list[dict] = []
+    while True:
+        chunk = (
+            sb.table("agency_agencies")
+            .select("id,website_url")
+            .range(offset, offset + page_size - 1)
+            .execute()
+            .data
+            or []
+        )
+        out.extend(chunk)
+        if len(chunk) < page_size:
+            return out
+        offset += page_size
+
+
 def run() -> dict:
     """Execute the dedup pass. Returns a summary dict."""
     sb = get_supabase()
-    rows = sb.table("agency_agencies").select("id,website_url").execute().data or []
+    rows = _fetch_all_agencies(sb)
 
     # Bucket by canonical domain
     buckets: dict[str, list[dict]] = defaultdict(list)
