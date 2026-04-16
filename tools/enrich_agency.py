@@ -118,9 +118,9 @@ def _fetch_pages(base_url: str, backend: str = "jina") -> str:
     """Try each path in order; return concatenated cleaned text from the
     first MAX_FETCHES that returned anything.
 
+    backend="crw" uses self-hosted CRW (free, fast, best Cloudflare bypass).
     backend="jina" uses r.jina.ai (free, slower).
-    backend="scraper" uses ScraperAPI (10 credits/req, faster).
-    For scraper backend, only fetch homepage to conserve credits.
+    backend="scraper" uses ScraperAPI (10 credits/req, paid).
     """
     parsed = urlparse(base_url if "://" in base_url else f"https://{base_url}")
     root = f"{parsed.scheme or 'https'}://{parsed.netloc or parsed.path}"
@@ -266,9 +266,15 @@ def run_batch(limit: int = 20, dry_run: bool = False, workers: int = DEFAULT_WOR
             logger.info(f"  ... and {len(rows) - 10} more")
         return 0
 
-    # Use ScraperAPI for all rows if keys available, else fall back to jina
-    scraper_key = os.environ.get("SCRAPERAPI_KEY")
-    backend = "scraper" if scraper_key else "jina"
+    # Backend preference: CRW (self-hosted, best Cloudflare bypass) > ScraperAPI
+    # (paid, decent) > jina (free fallback). CRW is free and local-ish, so
+    # prefer it whenever CRW_API_URL is set.
+    if os.environ.get("CRW_API_URL"):
+        backend = "crw"
+    elif os.environ.get("SCRAPERAPI_KEY"):
+        backend = "scraper"
+    else:
+        backend = "jina"
     logger.info(f"Enriching {len(rows)} agencies via {backend}, {workers} workers")
 
     success = 0

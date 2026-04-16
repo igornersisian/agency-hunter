@@ -135,6 +135,36 @@ def _next_scraper_key() -> str | None:
         return next(_scraper_key_cycle)
 
 
+def _fetch_crw(url: str, timeout: int) -> str | None:
+    """Fetch via self-hosted CRW (Firecrawl-compatible Rust scraper).
+
+    Returns clean markdown. Free (self-hosted), bypasses Cloudflare
+    better than ScraperAPI, faster than Playwright. URL comes from
+    `CRW_API_URL` env var (e.g. https://crw.deploybox.space).
+    """
+    base = os.environ.get("CRW_API_URL", "").rstrip("/")
+    if not base:
+        return None
+    try:
+        resp = httpx.post(
+            f"{base}/v1/scrape",
+            json={"url": url, "formats": ["markdown"]},
+            timeout=timeout,
+        )
+        if resp.status_code != 200:
+            logger.info(f"CRW returned {resp.status_code} for {url}")
+            return None
+        data = resp.json()
+        if not data.get("success"):
+            logger.info(f"CRW success=false for {url}: {data.get('error')}")
+            return None
+        md = data.get("data", {}).get("markdown") or ""
+        return md or None
+    except Exception as e:
+        logger.info(f"CRW failed for {url}: {e}")
+        return None
+
+
 def _fetch_scraperapi(url: str, timeout: int) -> str | None:
     """Fetch via ScraperAPI with JS render + markdown output.
 
@@ -285,8 +315,10 @@ def fetch_clean_text(url: str, timeout: int = DEFAULT_TIMEOUT,
                      backend: str = "jina") -> str:
     """Fetch a URL and return clean text ready for an LLM prompt.
 
-    backend="jina"  → r.jina.ai first, then direct fetch (default)
+    backend="crw"   → self-hosted CRW first, then direct fetch (preferred)
+    backend="jina"  → r.jina.ai first, then direct fetch
     backend="scraper" → ScraperAPI first, then direct fetch
+    backend="playwright" → local Playwright only
 
     Returns an empty string on total failure. Always truncated to
     `MAX_CHARS`.
@@ -298,6 +330,10 @@ def fetch_clean_text(url: str, timeout: int = DEFAULT_TIMEOUT,
         cleaned = _fetch_playwright(url, timeout)
     elif backend == "scraper":
         cleaned = _fetch_scraperapi(url, timeout)
+    elif backend == "crw":
+        cleaned = _fetch_crw(url, timeout)
+        if not cleaned:
+            cleaned = _fetch_direct(url, timeout)
     else:
         cleaned = _fetch_jina(url, timeout)
         if not cleaned:
