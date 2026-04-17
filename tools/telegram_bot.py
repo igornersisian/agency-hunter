@@ -270,6 +270,26 @@ def _md_escape(s) -> str:
     )
 
 
+_SUBSCORE_CAPS = (
+    ("tools",      "tool_alignment", 40),
+    ("services",   "service_match",  30),
+    ("market",     "market_fit",     15),
+    ("engagement", "engagement_fit", 15),
+)
+
+
+def _fmt_sub_scores(breakdown: dict) -> str:
+    """Render the 4-line sub-score breakdown (`tools 40/40`, etc.)."""
+    sub = breakdown.get("sub_scores") or {}
+    if not sub:
+        return "  (breakdown unavailable)"
+    lines = []
+    for label, key, cap in _SUBSCORE_CAPS:
+        val = sub.get(key, 0)
+        lines.append(f"  {label:<11} {val}/{cap}")
+    return "\n".join(lines)
+
+
 def _fmt_draft_card(draft: dict, agency: dict) -> str:
     breakdown = _as_dict(agency.get("fit_breakdown"))
     pros = breakdown.get("pros") or []
@@ -277,6 +297,7 @@ def _fmt_draft_card(draft: dict, agency: dict) -> str:
 
     pros_block = "\n".join(f"  + {_md_escape(p)}" for p in pros) or "  (none)"
     cons_block = "\n".join(f"  - {_md_escape(c)}" for c in cons) or "  (none)"
+    sub_block = _fmt_sub_scores(breakdown)
 
     body_preview = draft["body"] or ""
     if len(body_preview) > 900:
@@ -294,7 +315,8 @@ def _fmt_draft_card(draft: dict, agency: dict) -> str:
     return (
         f"*{name}*  ·  {country}\n"
         f"{website}\n"
-        f"fit score: *{agency.get('fit_score')}*/100\n\n"
+        f"fit score: *{agency.get('fit_score')}*/100\n"
+        f"{sub_block}\n\n"
         f"*Pros:*\n{pros_block}\n\n"
         f"*Cons:*\n{cons_block}\n\n"
         f"*Subject:* {subject}\n"
@@ -603,6 +625,7 @@ def _fmt_no_contact_card(agency: dict) -> str:
     breakdown = _as_dict(agency.get("fit_breakdown"))
     pros = breakdown.get("pros") or []
     pros_block = "\n".join(f"  + {_md_escape(p)}" for p in pros[:4]) or "  (none)"
+    sub_block = _fmt_sub_scores(breakdown)
 
     enriched = _as_dict(agency.get("enriched_data"))
     tools = ", ".join(_md_escape(t) for t in (enriched.get("tools") or [])[:6]) or "—"
@@ -619,7 +642,8 @@ def _fmt_no_contact_card(agency: dict) -> str:
     return (
         f"*{name}*  ·  {country}\n"
         f"{website}\n"
-        f"fit score: *{agency.get('fit_score')}*/100\n\n"
+        f"fit score: *{agency.get('fit_score')}*/100\n"
+        f"{sub_block}\n\n"
         f"{desc}\n\n"
         f"*Tools:* {tools}\n"
         f"*Services:* {services}\n\n"
