@@ -28,6 +28,7 @@ from __future__ import annotations
 import os
 import sys
 import json
+import html
 import logging
 import asyncio
 from datetime import datetime, timezone
@@ -253,21 +254,16 @@ def _as_dict(value) -> dict:
     return {}
 
 
-def _md_escape(s) -> str:
-    """Escape characters that break Telegram legacy Markdown entity
-    parsing (`*`, `_`, `` ` ``, `[`). Untrusted interpolated fields —
-    subject lines, LLM pros/cons, agency names — go through this before
-    landing inside a `parse_mode="Markdown"` message."""
+def _h(s) -> str:
+    """Escape untrusted text for Telegram HTML parse mode.
+
+    Legacy Markdown has brittle, under-documented edge cases that bit us
+    twice (underscores in /help, unterminated entities in long review
+    cards). HTML mode has one simple rule — escape `&`, `<`, `>` — and
+    no "entity can span a code fence" ambiguity."""
     if s is None:
         return ""
-    return (
-        str(s)
-        .replace("\\", "\\\\")
-        .replace("*", "\\*")
-        .replace("_", "\\_")
-        .replace("`", "\\`")
-        .replace("[", "\\[")
-    )
+    return html.escape(str(s), quote=False)
 
 
 _SUBSCORE_CAPS = (
@@ -295,34 +291,32 @@ def _fmt_draft_card(draft: dict, agency: dict) -> str:
     pros = breakdown.get("pros") or []
     cons = breakdown.get("cons") or []
 
-    pros_block = "\n".join(f"  + {_md_escape(p)}" for p in pros) or "  (none)"
-    cons_block = "\n".join(f"  - {_md_escape(c)}" for c in cons) or "  (none)"
-    sub_block = _fmt_sub_scores(breakdown)
+    pros_block = "\n".join(f"  + {_h(p)}" for p in pros) or "  (none)"
+    cons_block = "\n".join(f"  - {_h(c)}" for c in cons) or "  (none)"
+    sub_block = _h(_fmt_sub_scores(breakdown))
 
     body_preview = draft["body"] or ""
     if len(body_preview) > 900:
         body_preview = body_preview[:900] + "…"
-    # Body sits inside a triple-backtick code block — a stray ``` in the
-    # LLM output would close the fence early and leak raw text.
-    body_preview = body_preview.replace("```", "'''")
 
-    name = _md_escape(agency.get("name") or agency["id"])
-    country = _md_escape(agency.get("country") or "??")
-    website = _md_escape(agency.get("website_url") or agency["id"])
-    subject = _md_escape(draft["subject"])
-    to_email = _md_escape(draft["to_email"])
+    name = _h(agency.get("name") or agency["id"])
+    country = _h(agency.get("country") or "??")
+    website = _h(agency.get("website_url") or agency["id"])
+    subject = _h(draft["subject"])
+    to_email = _h(draft["to_email"])
+    body_html = _h(body_preview)
 
     return (
-        f"*{name}*  ·  {country}\n"
+        f"<b>{name}</b>  ·  {country}\n"
         f"{website}\n"
-        f"fit score: *{agency.get('fit_score')}*/100\n"
+        f"fit score: <b>{agency.get('fit_score')}</b>/100\n"
         f"{sub_block}\n\n"
-        f"*Pros:*\n{pros_block}\n\n"
-        f"*Cons:*\n{cons_block}\n\n"
-        f"*Subject:* {subject}\n"
-        f"*To:* {to_email}\n\n"
-        f"```\n{body_preview}\n```\n\n"
-        f"draft id: `{draft['id']}`  rev: {draft.get('revision', 0)}"
+        f"<b>Pros:</b>\n{pros_block}\n\n"
+        f"<b>Cons:</b>\n{cons_block}\n\n"
+        f"<b>Subject:</b> {subject}\n"
+        f"<b>To:</b> {to_email}\n\n"
+        f"<pre>{body_html}</pre>\n\n"
+        f"draft id: <code>{_h(draft['id'])}</code>  rev: {draft.get('revision', 0)}"
     )
 
 
@@ -358,7 +352,7 @@ async def _send_next_review(reply_target) -> None:
         ]])
         await reply_target.reply_text(
             _fmt_draft_card(draft, agency),
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=keyboard,
         )
         return
@@ -372,7 +366,7 @@ async def _send_next_review(reply_target) -> None:
         await reply_target.reply_text(
             "No drafts ready. Next agency with no scraped email:\n\n"
             + _fmt_no_contact_card(nc_agency),
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=keyboard,
             disable_web_page_preview=True,
         )
@@ -533,7 +527,7 @@ async def _regenerate(update: Update, draft_id: int, feedback: str) -> None:
     ]])
     await update.message.reply_text(
         "Regenerated draft:\n\n" + _fmt_draft_card(draft, agency),
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=keyboard,
     )
 
@@ -568,9 +562,9 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif action == "nc_add_email":
         _chat_pending[query.message.chat_id] = ("no_contact_email", target)
         await query.message.reply_text(
-            f"Send the email address for *{target}* as the next message. "
+            f"Send the email address for <b>{_h(target)}</b> as the next message. "
             f"(or /cancel)",
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
     elif action == "nc_reject":
         msg = await _do_nc_reject(target)
@@ -624,31 +618,32 @@ def _fetch_next_no_contact() -> dict | None:
 def _fmt_no_contact_card(agency: dict) -> str:
     breakdown = _as_dict(agency.get("fit_breakdown"))
     pros = breakdown.get("pros") or []
-    pros_block = "\n".join(f"  + {_md_escape(p)}" for p in pros[:4]) or "  (none)"
-    sub_block = _fmt_sub_scores(breakdown)
+    pros_block = "\n".join(f"  + {_h(p)}" for p in pros[:4]) or "  (none)"
+    sub_block = _h(_fmt_sub_scores(breakdown))
 
     enriched = _as_dict(agency.get("enriched_data"))
-    tools = ", ".join(_md_escape(t) for t in (enriched.get("tools") or [])[:6]) or "—"
-    services = ", ".join(_md_escape(s) for s in (enriched.get("services") or [])[:4]) or "—"
+    tools = ", ".join(_h(t) for t in (enriched.get("tools") or [])[:6]) or "—"
+    services = ", ".join(_h(s) for s in (enriched.get("services") or [])[:4]) or "—"
 
-    desc = _md_escape(agency.get("short_description") or "")
+    desc = agency.get("short_description") or ""
     if len(desc) > 300:
         desc = desc[:300] + "…"
+    desc = _h(desc)
 
-    name = _md_escape(agency.get("name") or agency["id"])
-    country = _md_escape(agency.get("country") or "??")
-    website = _md_escape(agency.get("website_url") or agency["id"])
+    name = _h(agency.get("name") or agency["id"])
+    country = _h(agency.get("country") or "??")
+    website = _h(agency.get("website_url") or agency["id"])
 
     return (
-        f"*{name}*  ·  {country}\n"
+        f"<b>{name}</b>  ·  {country}\n"
         f"{website}\n"
-        f"fit score: *{agency.get('fit_score')}*/100\n"
+        f"fit score: <b>{agency.get('fit_score')}</b>/100\n"
         f"{sub_block}\n\n"
         f"{desc}\n\n"
-        f"*Tools:* {tools}\n"
-        f"*Services:* {services}\n\n"
-        f"*Pros:*\n{pros_block}\n\n"
-        f"_No email was scraped from their site. Add one manually or reject._"
+        f"<b>Tools:</b> {tools}\n"
+        f"<b>Services:</b> {services}\n\n"
+        f"<b>Pros:</b>\n{pros_block}\n\n"
+        f"<i>No email was scraped from their site. Add one manually or reject.</i>"
     )
 
 
@@ -664,7 +659,7 @@ async def cmd_no_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     ]])
     await update.message.reply_text(
         _fmt_no_contact_card(agency),
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=keyboard,
         disable_web_page_preview=True,
     )
@@ -688,16 +683,16 @@ async def _handle_nc_email(update: Update, agency_id: str, email: str) -> None:
     email = email.strip().lower()
     if not _EMAIL_RE.match(email):
         await update.message.reply_text(
-            f"`{email}` doesn't look like a valid email. "
+            f"<code>{_h(email)}</code> doesn't look like a valid email. "
             f"Send /no_contact to try again.",
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
         return
     if _is_non_sendable_email(email):
         await update.message.reply_text(
-            f"`{email}` is a non-sendable system address. "
+            f"<code>{_h(email)}</code> is a non-sendable system address. "
             f"Send /no_contact to try again.",
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
         return
 
@@ -722,8 +717,8 @@ async def _handle_nc_email(update: Update, agency_id: str, email: str) -> None:
     sb.table("agency_agencies").update({"status": "contact_found"}).eq("id", agency_id).execute()
 
     await update.message.reply_text(
-        f"✔ Added `{email}` — drafting now…",
-        parse_mode="Markdown",
+        f"✔ Added <code>{_h(email)}</code> — drafting now…",
+        parse_mode="HTML",
     )
 
     # Draft the email in a background thread
@@ -756,7 +751,7 @@ async def _handle_nc_email(update: Update, agency_id: str, email: str) -> None:
     ]])
     await update.message.reply_text(
         "Draft ready:\n\n" + _fmt_draft_card(draft, agency),
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=keyboard,
     )
 
