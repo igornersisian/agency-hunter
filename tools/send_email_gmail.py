@@ -154,6 +154,16 @@ def _build_mime(from_email: str, to_email: str, subject: str, body: str) -> str:
     return raw
 
 
+def _reject_draft(draft_id: int, agency_id: str | None = None, agency_status: str | None = None) -> None:
+    sb = get_supabase()
+    sb.table("agency_outreach_messages").update({"status": "rejected"}).eq("id", draft_id).execute()
+    if agency_id and agency_status:
+        sb.table("agency_agencies").update({
+            "status": agency_status,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", agency_id).execute()
+
+
 def send_draft(draft_id: int) -> dict:
     """Send one approved/ready draft. Returns a status dict."""
     sb = get_supabase()
@@ -165,27 +175,21 @@ def send_draft(draft_id: int) -> dict:
     to_email = (draft.get("to_email") or "").strip()
     agency_id = draft.get("agency_id")
     if not to_email:
-        # No recipient → the draft is dead. Mark it rejected so the
-        # scheduler doesn't pick it up again every 30s (that loop was
-        # spamming Telegram with "missing_to_email" alerts). Also flip
-        # the agency back to no_contact so it surfaces in the manual
-        # email-add queue.
+        # Terminal-fail the draft so the 30s scheduler loop stops retrying.
         logger.warning(f"Skip {draft_id}: to_email is empty — marking rejected")
-        sb.table("agency_outreach_messages").update({"status": "rejected"}).eq("id", draft_id).execute()
-        if agency_id:
-            sb.table("agency_agencies").update({"status": "no_contact"}).eq("id", agency_id).execute()
+        _reject_draft(draft_id, agency_id, "no_contact")
         return {"ok": False, "reason": "missing_to_email"}
 
     # ── Safety check: hard opt-out list ──
     if _is_opted_out(to_email):
         logger.info(f"Skip {draft_id}: {to_email} is opted out")
-        sb.table("agency_outreach_messages").update({"status": "rejected"}).eq("id", draft_id).execute()
+        _reject_draft(draft_id)
         return {"ok": False, "reason": "opted_out"}
 
     # ── Safety check: already emailed this agency in last 60 days ──
     if _already_sent_to_agency_recently(agency_id):
         logger.info(f"Skip {draft_id}: agency {agency_id} already contacted in last 60 days")
-        sb.table("agency_outreach_messages").update({"status": "rejected"}).eq("id", draft_id).execute()
+        _reject_draft(draft_id)
         return {"ok": False, "reason": "recently_contacted"}
 
     # ── Safety check: daily cap ──
@@ -211,11 +215,7 @@ def send_draft(draft_id: int) -> dict:
     # ── Safety check: Gmail history (prior manual outreach) ──
     if _gmail_history_has(to_email):
         logger.info(f"Skip {draft_id}: {to_email} found in Gmail history")
-        sb.table("agency_outreach_messages").update({"status": "rejected"}).eq("id", draft_id).execute()
-        sb.table("agency_agencies").update({
-            "status": "previously_contacted",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("id", agency_id).execute()
+        _reject_draft(draft_id, agency_id, "previously_contacted")
         return {"ok": False, "reason": "previously_contacted"}
 
     # ── Compose final body ──

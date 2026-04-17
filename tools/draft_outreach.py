@@ -220,10 +220,7 @@ def draft_for_agency(agency_id: str) -> int | None:
     agency = agency[0]
 
     enriched = agency.get("enriched_data") or {}
-    # Email source priority:
-    #   1. agency_contacts — manual Telegram "➕ Add email" input lands here
-    #   2. enriched_data (best_contact_email / visible_emails) — scraped
-    # If both empty → agency is no_contact, no draft is created.
+    # Manual-first: Telegram "➕ Add email" input lives in agency_contacts and must override stale scraped emails.
     to_email = None
     manual = sb.table("agency_contacts").select("email").eq("agency_id", agency_id).limit(1).execute().data or []
     if manual and (manual[0].get("email") or "").strip():
