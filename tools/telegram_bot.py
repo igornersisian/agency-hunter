@@ -104,99 +104,92 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Plain text — underscores in command names (/no_contact, /send_cap)
     # break Telegram's Markdown parser, so we avoid parse_mode entirely.
     await update.message.reply_text(
-        "Agency Hunter — command reference\n"
+        "Agency Hunter\n"
         "\n"
-        "HOW IT WORKS\n"
-        "1. /fetch runs the pipeline: Apify Google Search → dedup → "
-        "enrich → classify → find contacts → draft cold email.\n"
-        "2. /review walks through everything waiting on you — first "
-        "ready drafts, then agencies with no scraped email. One command, "
-        "one queue.\n"
-        "3. Approve sends via Gmail (pre-send history check blocks "
-        "duplicates). Edit asks for free-text feedback and regenerates "
-        "the opener. Reject discards.\n"
+        "/fetch    run pipeline (discover → enrich → classify → draft)\n"
+        "/review   next item: a draft to approve OR an agency needing an email\n"
+        "/stats    queue / outbox / pool summary\n"
         "\n"
-        "PIPELINE\n"
-        "/fetch — full discovery → enrich → classify → draft pass "
-        "(idempotent; safe to re-run)\n"
-        "/stats — agency counts per state + drafts ready + sent total\n"
+        "REVIEW BUTTONS\n"
+        "  ✅ Approve   schedule for send (Mon-Fri 09-17 recipient-local)\n"
+        "  ❌ Reject    discard\n"
+        "  ✏️ Edit     rewrite opener — reply with feedback text\n"
+        "  ➕ Add email  (no-email cards) type an address to auto-draft\n"
         "\n"
-        "REVIEW & SEND\n"
-        "/review — next item in the unified queue. Shows either:\n"
-        "  • a ready draft card with [Approve] [Reject] [Edit] buttons, or\n"
-        "  • a no-contact agency card with [Add email] [Reject] buttons "
-        "(adding an email auto-drafts and shows the draft card next).\n"
-        "/approve <id> — schedule draft for send via Gmail (recipient-"
-        "local Mon–Fri 09:00–17:00, random 5–20 min spacing, respects "
-        "/send_cap, opt-outs, prior-contact check)\n"
-        "/reject <id> — mark draft rejected, no send\n"
-        "/edit <id> [feedback...] — regenerate opener. Two forms:\n"
-        "  • /edit 42 make it warmer and drop the word partnership\n"
-        "  • /edit 42   (then send feedback as the next message)\n"
-        "/no_contact — shortcut straight to the next no-contact "
-        "agency, skipping ready drafts. /review already handles this "
-        "automatically — this is just a fast-path.\n"
+        "CONFIG (no args shows current value)\n"
+        "  /threshold N      fit score cutoff (default 70)\n"
+        "  /send_cap N       daily Gmail send ceiling\n"
+        "  /countries CC,CC  ISO-2 target countries\n"
         "\n"
-        "CONFIG (writes to shared profile row)\n"
-        "/threshold [N] — fit score cutoff for qualified "
-        "(default 70; applies from next /fetch)\n"
-        "/send_cap [N]  — daily Gmail send ceiling "
-        "(default 10 via AGENCY_DAILY_SEND_CAP env)\n"
-        "/countries [CC,CC,...] — ISO-2 target countries for discovery "
-        "(e.g. /countries US,GB,NZ)\n"
-        "\n"
-        "Run any config command without arguments to just view the "
-        "current value. Profile overrides take precedence over .env.\n"
-        "\n"
-        "SAFETY RAILS\n"
-        "• No auto-send — every outbound email needs your /approve\n"
-        "• Gmail pre-send check skips addresses you've already emailed\n"
-        "• Role inboxes (info@, sales@, …) are never targeted\n"
-        "• Replies with \"not interested\" add the address to opt-outs\n"
-        "• Soft opt-out line + physical address appended at send time"
+        "SAFETY\n"
+        "  No auto-send. Role inboxes (info@, sales@) never targeted.\n"
+        "  Pre-send dedup — same address won't get emailed twice.\n"
+        "  Reply \"not interested\" → permanent opt-out."
     )
 
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     sb = get_supabase()
 
-    # Agency-level pipeline (one row per agency)
-    agency_statuses = [
-        "discovered", "enriching", "enriched",
-        "classifying", "qualified", "rejected",
-        "contact_found", "no_contact",
-        "ready_to_send", "scheduled", "sent",
-        "previously_contacted", "no_hook_skip",
-        "enrich_failed", "classify_failed",
-    ]
-    agency_counts: dict[str, int] = {}
-    for s in agency_statuses:
-        r = sb.table("agency_agencies").select("id", count="exact").eq("status", s).execute()
-        agency_counts[s] = r.count or 0
+    def _agency_count(status: str) -> int:
+        return sb.table("agency_agencies").select("id", count="exact") \
+            .eq("status", status).execute().count or 0
 
-    # Draft-level pipeline (one row per outreach message; an agency can
-    # have several drafts across revisions or re-drafts)
     def _draft_count(status: str) -> int:
         return sb.table("agency_outreach_messages").select("id", count="exact") \
             .eq("status", status).execute().count or 0
 
-    drafts_ready     = _draft_count("ready_to_send")
+    # TO REVIEW — what's waiting on a human decision
+    drafts_waiting    = _draft_count("ready_to_send")
+    agencies_no_email = _agency_count("no_contact")
+
+    # OUTBOX — approved drafts in flight + everything ever sent
     drafts_scheduled = _draft_count("scheduled")
     drafts_sent      = _draft_count("sent")
-    drafts_rejected  = _draft_count("rejected")
 
-    lines = ["📊 Agency Hunter stats", "", "AGENCIES (pipeline state)"]
-    for s, n in agency_counts.items():
-        if n:
-            lines.append(f"  {s}: {n}")
+    # "sent today" — drafts dispatched since 00:00 UTC. UTC is fine for
+    # a rough daily tally; sender-local would need window logic.
+    today_cutoff = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    sent_today = sb.table("agency_outreach_messages").select("id", count="exact") \
+        .eq("status", "sent").gte("sent_at", today_cutoff).execute().count or 0
 
-    lines.append("")
-    lines.append("DRAFTS (one agency can have several)")
-    lines.append(f"  waiting for your review:   {drafts_ready}")
-    lines.append(f"  approved, awaiting send:   {drafts_scheduled}")
-    lines.append(f"  sent:                      {drafts_sent}")
-    if drafts_rejected:
-        lines.append(f"  rejected:                  {drafts_rejected}")
+    # POOL — total pipeline scale
+    total_agencies = sb.table("agency_agencies").select("id", count="exact").execute().count or 0
+    rejected       = _agency_count("rejected")
+
+    # Alerts — surface only when something is actually stuck
+    enrich_failed  = _agency_count("enrich_failed")
+    classify_failed = _agency_count("classify_failed")
+    no_hook_skip   = _agency_count("no_hook_skip")
+
+    lines = [
+        "📊 Agency Hunter",
+        "",
+        "TO REVIEW",
+        f"  drafts waiting:    {drafts_waiting}",
+        f"  no-email agencies: {agencies_no_email}",
+        "",
+        "OUTBOX",
+        f"  scheduled:   {drafts_scheduled}",
+        f"  sent today:  {sent_today}",
+        f"  sent total:  {drafts_sent}",
+        "",
+        "POOL",
+        f"  agencies in DB: {total_agencies:,}",
+        f"  rejected:       {rejected:,}",
+    ]
+
+    alerts = []
+    if enrich_failed:
+        alerts.append(f"  enrich_failed:  {enrich_failed}")
+    if classify_failed:
+        alerts.append(f"  classify_failed: {classify_failed}")
+    if no_hook_skip:
+        alerts.append(f"  no_hook_skip:   {no_hook_skip}")
+    if alerts:
+        lines.append("")
+        lines.append("⚠ ALERTS")
+        lines.extend(alerts)
 
     await update.message.reply_text("\n".join(lines))
 
