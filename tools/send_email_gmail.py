@@ -165,6 +165,15 @@ def send_draft(draft_id: int) -> dict:
     to_email = (draft.get("to_email") or "").strip()
     agency_id = draft.get("agency_id")
     if not to_email:
+        # No recipient → the draft is dead. Mark it rejected so the
+        # scheduler doesn't pick it up again every 30s (that loop was
+        # spamming Telegram with "missing_to_email" alerts). Also flip
+        # the agency back to no_contact so it surfaces in the manual
+        # email-add queue.
+        logger.warning(f"Skip {draft_id}: to_email is empty — marking rejected")
+        sb.table("agency_outreach_messages").update({"status": "rejected"}).eq("id", draft_id).execute()
+        if agency_id:
+            sb.table("agency_agencies").update({"status": "no_contact"}).eq("id", agency_id).execute()
         return {"ok": False, "reason": "missing_to_email"}
 
     # ── Safety check: hard opt-out list ──
