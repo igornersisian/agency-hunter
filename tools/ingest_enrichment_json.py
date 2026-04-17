@@ -29,7 +29,15 @@ MD_DIR = Path(".tmp/enrich_md")
 JSON_DIR = Path(".tmp/enrich_json")
 
 
+_TERMINAL_STATUSES = {"qualified", "rejected", "classifying", "ready_to_send", "no_hook_skip", "no_contact", "sent", "replied"}
+
+
 def _apply(sb, agency_id: str, data: dict, raw_text: str) -> bool:
+    current = sb.table("agency_agencies").select("status").eq("id", agency_id).limit(1).execute().data
+    if current and current[0].get("status") in _TERMINAL_STATUSES:
+        logger.info(f"skip {agency_id}: already {current[0]['status']} — refusing to reset to enriched")
+        return False
+
     update: dict = {
         "enriched_data": data,
         "raw_website_text": raw_text,

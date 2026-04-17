@@ -83,18 +83,26 @@ def _system_prompt(profile_text: str, template_text: str) -> str:
         'contract work."\n\n'
 
         "CONCRETE_DETAIL RULES:\n"
-        "- Pick the strongest overlap between the agency's tools/services "
-        "and Igor's stack: n8n, make.com, zapier, OpenAI, Anthropic, "
-        "Supabase, WeWeb, Webflow, Retool, Bubble, Airtable, LangChain, "
-        "Claude Code.\n"
-        "- Priority: tool_match (agency lists a tool Igor knows) > "
-        "service_match (agency offers a service Igor ships — RAG, "
-        "multi-agent AI, workflow automation, no-code apps) > other.\n"
+        "- This agency already passed a strict fit evaluator (score ≥ 70) "
+        "and you will be shown the evaluator's `fit_reasoning`. The overlap "
+        "ALREADY exists — your job is to name it, not to second-guess it.\n"
+        "- Anchor hierarchy (walk DOWN until you find something concrete):\n"
+        "    1. enriched_data.tools — n8n, make.com, zapier, OpenAI, "
+        "Anthropic, Supabase, WeWeb, Webflow, Retool, Bubble, Airtable, "
+        "LangChain, Claude Code.\n"
+        "    2. enriched_data.services — name a specific service Igor ships: "
+        "RAG, multi-agent AI, agentic AI, LLM integration, workflow "
+        "automation, AI automation, no-code apps, chatbot development, "
+        "process automation, AI consulting.\n"
+        "    3. enriched_data.specialization or fit_reasoning — pull the "
+        "exact phrase the evaluator highlighted (e.g. 'your generative AI "
+        "consulting focus', 'your voice agent work').\n"
         "- Keep it brief: 'your n8n + Make work', 'your LangChain and "
-        "Anthropic stack', 'your RAG implementation focus'.\n"
-        "- Only reference things ACTUALLY in enriched_data. Never invent.\n"
-        "- If no honest overlap exists, return null for opener and "
-        "subject.\n\n"
+        "Anthropic stack', 'your RAG implementation focus', 'your AI "
+        "automation services'.\n"
+        "- Only reference things actually present in the agency data. "
+        "Never invent a specific tool that isn't listed.\n"
+        "- NEVER return null. Score ≥ 70 means overlap exists — find it.\n\n"
 
         "SUBJECT LINE RULES:\n"
         "- ≤ 60 characters, simple, human-readable.\n"
@@ -129,13 +137,16 @@ def _system_prompt(profile_text: str, template_text: str) -> str:
     )
 
 
-def _call_llm(enriched: dict, profile: dict, extra_feedback: str | None = None,
+def _call_llm(enriched: dict, profile: dict, fit_reasoning: str | None = None,
+              extra_feedback: str | None = None,
               prior_opener: str | None = None) -> dict:
     agency_text = json.dumps(enriched, ensure_ascii=False, indent=2)
     profile_text = json.dumps(profile, ensure_ascii=False, indent=2)
     template_text = _load_template()
 
     user_content = f"AGENCY ENRICHED DATA:\n{agency_text}"
+    if fit_reasoning:
+        user_content += f"\n\nEVALUATOR'S FIT REASONING (the overlap they found):\n{fit_reasoning}"
     if prior_opener:
         user_content += f"\n\nPRIOR OPENER (to improve):\n{prior_opener}"
     if extra_feedback:
@@ -216,14 +227,16 @@ def draft_for_agency(agency_id: str) -> int | None:
         return None
 
     profile = get_profile() or {}
-    result = _call_llm(enriched, profile)
+    fit_reasoning = agency.get("fit_reasoning")
+    result = _call_llm(enriched, profile, fit_reasoning=fit_reasoning)
 
     opener = result.get("personalized_opener")
     subject = result.get("subject_line")
     if not opener or not subject:
-        logger.info(f"No concrete hook for {agency_id} — marking no_hook_skip")
-        sb.table("agency_agencies").update({"status": "no_hook_skip"}).eq("id", agency_id).execute()
-        return None
+        raise RuntimeError(
+            f"LLM returned null opener/subject for {agency_id} despite "
+            f"fit_score being above threshold. Row stays qualified for retry."
+        )
 
     body = _assemble_body(opener)
     from_email = (profile.get("agency_sender_email") or "").strip()

@@ -260,26 +260,52 @@ def _as_dict(value) -> dict:
     return {}
 
 
+def _md_escape(s) -> str:
+    """Escape characters that break Telegram legacy Markdown entity
+    parsing (`*`, `_`, `` ` ``, `[`). Untrusted interpolated fields —
+    subject lines, LLM pros/cons, agency names — go through this before
+    landing inside a `parse_mode="Markdown"` message."""
+    if s is None:
+        return ""
+    return (
+        str(s)
+        .replace("\\", "\\\\")
+        .replace("*", "\\*")
+        .replace("_", "\\_")
+        .replace("`", "\\`")
+        .replace("[", "\\[")
+    )
+
+
 def _fmt_draft_card(draft: dict, agency: dict) -> str:
     breakdown = _as_dict(agency.get("fit_breakdown"))
     pros = breakdown.get("pros") or []
     cons = breakdown.get("cons") or []
 
-    pros_block = "\n".join(f"  + {p}" for p in pros) or "  (none)"
-    cons_block = "\n".join(f"  - {c}" for c in cons) or "  (none)"
+    pros_block = "\n".join(f"  + {_md_escape(p)}" for p in pros) or "  (none)"
+    cons_block = "\n".join(f"  - {_md_escape(c)}" for c in cons) or "  (none)"
 
-    body_preview = draft["body"]
+    body_preview = draft["body"] or ""
     if len(body_preview) > 900:
         body_preview = body_preview[:900] + "…"
+    # Body sits inside a triple-backtick code block — a stray ``` in the
+    # LLM output would close the fence early and leak raw text.
+    body_preview = body_preview.replace("```", "'''")
+
+    name = _md_escape(agency.get("name") or agency["id"])
+    country = _md_escape(agency.get("country") or "??")
+    website = _md_escape(agency.get("website_url") or agency["id"])
+    subject = _md_escape(draft["subject"])
+    to_email = _md_escape(draft["to_email"])
 
     return (
-        f"*{agency.get('name') or agency['id']}*  ·  {agency.get('country') or '??'}\n"
-        f"{agency.get('website_url') or agency['id']}\n"
+        f"*{name}*  ·  {country}\n"
+        f"{website}\n"
         f"fit score: *{agency.get('fit_score')}*/100\n\n"
         f"*Pros:*\n{pros_block}\n\n"
         f"*Cons:*\n{cons_block}\n\n"
-        f"*Subject:* {draft['subject']}\n"
-        f"*To:* {draft['to_email']}\n\n"
+        f"*Subject:* {subject}\n"
+        f"*To:* {to_email}\n\n"
         f"```\n{body_preview}\n```\n\n"
         f"draft id: `{draft['id']}`  rev: {draft.get('revision', 0)}"
     )
@@ -583,19 +609,23 @@ def _fetch_next_no_contact() -> dict | None:
 def _fmt_no_contact_card(agency: dict) -> str:
     breakdown = _as_dict(agency.get("fit_breakdown"))
     pros = breakdown.get("pros") or []
-    pros_block = "\n".join(f"  + {p}" for p in pros[:4]) or "  (none)"
+    pros_block = "\n".join(f"  + {_md_escape(p)}" for p in pros[:4]) or "  (none)"
 
     enriched = _as_dict(agency.get("enriched_data"))
-    tools = ", ".join((enriched.get("tools") or [])[:6]) or "—"
-    services = ", ".join((enriched.get("services") or [])[:4]) or "—"
+    tools = ", ".join(_md_escape(t) for t in (enriched.get("tools") or [])[:6]) or "—"
+    services = ", ".join(_md_escape(s) for s in (enriched.get("services") or [])[:4]) or "—"
 
-    desc = agency.get("short_description") or ""
+    desc = _md_escape(agency.get("short_description") or "")
     if len(desc) > 300:
         desc = desc[:300] + "…"
 
+    name = _md_escape(agency.get("name") or agency["id"])
+    country = _md_escape(agency.get("country") or "??")
+    website = _md_escape(agency.get("website_url") or agency["id"])
+
     return (
-        f"*{agency.get('name') or agency['id']}*  ·  {agency.get('country') or '??'}\n"
-        f"{agency.get('website_url') or agency['id']}\n"
+        f"*{name}*  ·  {country}\n"
+        f"{website}\n"
         f"fit score: *{agency.get('fit_score')}*/100\n\n"
         f"{desc}\n\n"
         f"*Tools:* {tools}\n"
