@@ -151,6 +151,7 @@ def _extract_via_llm(text: str) -> dict:
     response = chat_completion(
         model="gpt-4.1-mini",
         response_format={"type": "json_object"},
+        service_tier="flex",
         messages=[
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": f"{_JSON_SCHEMA_HINT}\n\nWEBSITE TEXT:\n{text}"},

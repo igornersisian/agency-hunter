@@ -139,7 +139,8 @@ def _system_prompt(profile_text: str, template_text: str) -> str:
 
 def _call_llm(enriched: dict, profile: dict, fit_reasoning: str | None = None,
               extra_feedback: str | None = None,
-              prior_opener: str | None = None) -> dict:
+              prior_opener: str | None = None,
+              service_tier: str | None = None) -> dict:
     agency_text = json.dumps(enriched, ensure_ascii=False, indent=2)
     profile_text = json.dumps(profile, ensure_ascii=False, indent=2)
     template_text = _load_template()
@@ -160,6 +161,7 @@ def _call_llm(enriched: dict, profile: dict, fit_reasoning: str | None = None,
     response = chat_completion(
         model="gpt-4.1-mini",
         response_format={"type": "json_object"},
+        service_tier=service_tier,
         messages=[
             {"role": "system", "content": _system_prompt(profile_text, template_text)},
             {"role": "user", "content": user_content},
@@ -234,7 +236,7 @@ def draft_for_agency(agency_id: str) -> int | None:
 
     profile = get_profile() or {}
     fit_reasoning = agency.get("fit_reasoning")
-    result = _call_llm(enriched, profile, fit_reasoning=fit_reasoning)
+    result = _call_llm(enriched, profile, fit_reasoning=fit_reasoning, service_tier="flex")
 
     opener = result.get("personalized_opener")
     subject = result.get("subject_line")
