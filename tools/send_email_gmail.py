@@ -56,17 +56,54 @@ def _already_sent_to_agency_recently(agency_id: str, days: int = 60) -> bool:
     return bool(rows.data)
 
 
-def _sent_today_count() -> int:
+def _sent_today_count(from_email: str) -> int:
     sb = get_supabase()
     start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     rows = (
         sb.table("agency_outreach_messages")
         .select("id")
         .eq("status", "sent")
+        .eq("from_email", from_email)
         .gte("sent_at", start)
         .execute()
     )
     return len(rows.data or [])
+
+
+def _accounts() -> list[tuple[str, str]]:
+    """Configured sender accounts as (email, password) pairs.
+
+    Accounts with a missing email OR missing password are dropped — the
+    env presence is the only switch. This means removing either var in
+    `.env` cleanly degrades to single-account mode without code changes.
+    """
+    pairs = [
+        (os.environ.get("AGENCY_SENDER_EMAIL", "").strip(),
+         os.environ.get("GMAIL_APP_PASSWORD", "").strip()),
+        (os.environ.get("AGENCY_SENDER_EMAIL_2", "").strip(),
+         os.environ.get("2ACC_GMAIL_APP_PASSWORD", "").strip()),
+    ]
+    return [(e, p) for e, p in pairs if e and p]
+
+
+def _pick_account(cap: int) -> tuple[str, str] | None:
+    """Pick the configured account with the most remaining daily capacity.
+
+    Returns (email, password) or None if every account has hit the cap.
+    Ties break toward the first account in `_accounts()` order, which
+    effectively round-robins when both accounts stay in lockstep.
+    """
+    best: tuple[int, str, str] | None = None
+    for email, password in _accounts():
+        sent = _sent_today_count(email)
+        if sent >= cap:
+            continue
+        if best is None or sent < best[0]:
+            best = (sent, email, password)
+    if best is None:
+        return None
+    _, email, password = best
+    return email, password
 
 
 def _db_history_has(email: str) -> bool:
@@ -109,10 +146,7 @@ def _build_message(from_email: str, to_email: str, subject: str, body: str) -> t
     return msg, message_id
 
 
-def _smtp_send(from_email: str, to_email: str, msg: EmailMessage) -> None:
-    password = os.environ.get("GMAIL_APP_PASSWORD", "").strip()
-    if not password:
-        raise RuntimeError("GMAIL_APP_PASSWORD is not set")
+def _smtp_send(from_email: str, password: str, to_email: str, msg: EmailMessage) -> None:
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as server:
         server.login(from_email, password)
         server.send_message(msg, from_addr=from_email, to_addrs=[to_email])
@@ -155,10 +189,11 @@ def send_draft(draft_id: int) -> dict:
 
     cfg = get_agency_config()
     cap = cfg["agency_send_cap"]
-    sent_today = _sent_today_count()
-    if sent_today >= cap:
-        logger.info(f"Skip {draft_id}: daily cap {cap} reached ({sent_today} sent)")
+    picked = _pick_account(cap)
+    if picked is None:
+        logger.info(f"Skip {draft_id}: daily cap {cap}/account reached on all accounts")
         return {"ok": False, "reason": "daily_cap_reached"}
+    from_email, password = picked
 
     # Fail-closed: footer is legally required on cold outreach.
     if not os.environ.get("AGENCY_SENDER_PHYSICAL_ADDRESS", "").strip():
@@ -173,15 +208,12 @@ def send_draft(draft_id: int) -> dict:
         _reject_draft(draft_id, agency_id, "previously_contacted")
         return {"ok": False, "reason": "previously_contacted"}
 
-    from_email = (draft.get("from_email") or os.environ.get("AGENCY_SENDER_EMAIL", "")).strip()
-    if not from_email:
-        return {"ok": False, "reason": "no_from_email"}
     final_body = _compose_final_body(draft["body"])
 
     msg, message_id = _build_message(from_email, to_email, draft["subject"], final_body)
 
     try:
-        _smtp_send(from_email, to_email, msg)
+        _smtp_send(from_email, password, to_email, msg)
     except smtplib.SMTPAuthenticationError as e:
         logger.error(f"SMTP auth failed for draft {draft_id}: {e}")
         return {"ok": False, "reason": "smtp_auth_error"}
@@ -195,6 +227,7 @@ def send_draft(draft_id: int) -> dict:
         "sent_at": now,
         "message_id": message_id,
         "body": final_body,
+        "from_email": from_email,
     }).eq("id", draft_id).execute()
 
     sb.table("agency_agencies").update({

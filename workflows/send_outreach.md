@@ -13,8 +13,11 @@ and deliverability safeguard in place.
 1. **Opt-out list** — `agency_opt_outs` table. Hit → reject the draft.
 2. **Recency cap** — ≥1 sent message to this agency in the last 60
    days. Hit → reject.
-3. **Daily cap** — `agency_send_cap` (default 15) already reached today.
-   Hit → defer.
+3. **Daily cap** — `agency_send_cap` is applied **per sender account**.
+   The sender pool reads from `AGENCY_SENDER_EMAIL`/`GMAIL_APP_PASSWORD`
+   and `AGENCY_SENDER_EMAIL_2`/`2ACC_GMAIL_APP_PASSWORD`; each account
+   has its own independent cap. At send time we pick the account with
+   the most remaining capacity. Both accounts at cap → defer.
 4. **Gmail history check** — `users.messages.list` with
    `q='to:{email} OR from:{email}'`. **Any hit means Igor has already
    exchanged mail with this address from his Gmail account**, even
@@ -41,7 +44,8 @@ because it's per-sender and changes independently from the template.
 
 ## Deliverability notes
 - Personal Gmail inherits sender reputation — no warmup needed.
-- Hard cap: ~15/day. Going higher flips Gmail's abuse heuristics fast.
+- Hard cap: ~15/day **per Gmail account**. Going higher flips Gmail's
+  abuse heuristics fast. With two accounts @ 12/day each = 24/day total.
 - Send window (phase 2): Tue–Thu 09:00–11:00 recipient-local time.
   For MVP we just cap daily count and let Igor approve during his day.
 
