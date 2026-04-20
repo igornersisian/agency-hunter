@@ -1,38 +1,31 @@
 """
-Phase 7 send — Gmail API OAuth sender.
+Phase 7 send — Gmail SMTP sender (App Password auth).
 
 Responsibilities:
     1. Pre-send safety checks:
         a. agency_opt_outs table (hard block list)
-        b. agency_outreach_messages daily-cap check
-        c. **Gmail history check** via users.messages.list with
-           q='to:{email} OR from:{email}' — if ANY match exists, the
-           address has been contacted before (from THIS gmail account),
-           so skip, flip the agency to `previously_contacted`, and
-           notify. Catches prior manual outreach from before this
-           project existed.
-        d. One-email-per-agency per 60 days (DB-level)
+        b. 60-day duplicate check (DB-level)
+        c. DB-based prior-contact check (agency_outreach_messages where
+           to_email already marked `sent`) — replaces the old Gmail-API
+           history scan, which required OAuth + gmail.readonly and broke
+           every 7 days in Testing-mode apps.
+        d. Daily-cap check
     2. Append the CAN-SPAM physical address footer at SEND time (env-var
        driven, per-sender). The soft opt-out line already lives verbatim
-       inside `templates/cold_v1.md` — since the LLM never outputs body
-       (only opener + subject) and `_assemble_body` is a pure
-       `.replace()`, the template line ships byte-for-byte without risk.
-    3. Build + send the MIME message, capture threadId/messageId back
-       to the row, flip status to `sent`.
-
-First-run OAuth: on the very first invocation the script opens a
-browser, you click through Google's consent page, the token is cached
-to `token.json`. Subsequent runs are silent.
+       inside `templates/cold_v1.md`.
+    3. Open an SMTP_SSL connection to smtp.gmail.com:465, log in with the
+       App Password, send, close. Save the generated Message-ID back to
+       the row, flip status to `sent`.
 """
 
 from __future__ import annotations
 
 import os
-import base64
+import smtplib
 import logging
 from email.message import EmailMessage
+from email.utils import make_msgid
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -42,43 +35,6 @@ from common.profile import get_agency_config
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-
-SCOPES = [
-    "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/gmail.readonly",
-]
-
-_service = None
-
-
-def _gmail_service():
-    """Return an authorized Gmail API service. First call triggers OAuth."""
-    global _service
-    if _service is not None:
-        return _service
-
-    from google.oauth2.credentials import Credentials
-    from google_auth_oauthlib.flow import InstalledAppFlow
-    from google.auth.transport.requests import Request
-    from googleapiclient.discovery import build
-
-    creds_path = os.environ.get("GMAIL_OAUTH_CREDENTIALS_PATH", "credentials.json")
-    token_path = os.environ.get("GMAIL_TOKEN_PATH", "token.json")
-
-    creds = None
-    if Path(token_path).exists():
-        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES)
-            creds = flow.run_local_server(port=0)
-        Path(token_path).write_text(creds.to_json(), encoding="utf-8")
-
-    _service = build("gmail", "v1", credentials=creds, cache_discovery=False)
-    return _service
 
 
 def _is_opted_out(email: str) -> bool:
@@ -113,30 +69,28 @@ def _sent_today_count() -> int:
     return len(rows.data or [])
 
 
-def _gmail_history_has(email: str) -> bool:
-    """Return True if this Gmail account has EVER exchanged mail with `email`.
+def _db_history_has(email: str) -> bool:
+    """True iff this project has ever marked a message to `email` as sent.
 
-    Runs `users.messages.list` with `q='to:{email} OR from:{email}'`.
-    Any hit → the user already corresponded with this address.
+    Replaces the old Gmail API inbox scan. Catches the case where we
+    previously sent to this address via this pipeline but the 60-day
+    dedupe (`_already_sent_to_agency_recently`) wouldn't trigger because
+    the agency_id differs (e.g. the same inbox listed under two domains).
     """
-    try:
-        svc = _gmail_service()
-        q = f"to:{email} OR from:{email}"
-        resp = svc.users().messages().list(userId="me", q=q, maxResults=1).execute()
-        return bool(resp.get("messages"))
-    except Exception as e:
-        # Fail closed — if we can't check, do NOT send.
-        logger.error(f"Gmail history check failed for {email}: {e}. Refusing to send.")
-        return True
+    sb = get_supabase()
+    rows = (
+        sb.table("agency_outreach_messages")
+        .select("id")
+        .eq("to_email", email.lower())
+        .eq("status", "sent")
+        .limit(1)
+        .execute()
+    )
+    return bool(rows.data)
 
 
 def _compose_final_body(assembled_body: str) -> str:
-    """Append the CAN-SPAM physical address footer at send time.
-
-    The soft opt-out line lives verbatim in `templates/cold_v1.md` — no
-    injection needed here. The physical address is env-var driven
-    (per-sender, may change), so we add it at the bottom at send time.
-    """
+    """Append the CAN-SPAM physical address footer at send time."""
     body = assembled_body
     address = os.environ.get("AGENCY_SENDER_PHYSICAL_ADDRESS", "").strip()
     if address:
@@ -144,14 +98,24 @@ def _compose_final_body(assembled_body: str) -> str:
     return body
 
 
-def _build_mime(from_email: str, to_email: str, subject: str, body: str) -> str:
+def _build_message(from_email: str, to_email: str, subject: str, body: str) -> tuple[EmailMessage, str]:
     msg = EmailMessage()
     msg["To"] = to_email
     msg["From"] = from_email
     msg["Subject"] = subject
+    message_id = make_msgid(domain=from_email.split("@", 1)[-1] or "localhost")
+    msg["Message-ID"] = message_id
     msg.set_content(body)
-    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
-    return raw
+    return msg, message_id
+
+
+def _smtp_send(from_email: str, to_email: str, msg: EmailMessage) -> None:
+    password = os.environ.get("GMAIL_APP_PASSWORD", "").strip()
+    if not password:
+        raise RuntimeError("GMAIL_APP_PASSWORD is not set")
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as server:
+        server.login(from_email, password)
+        server.send_message(msg, from_addr=from_email, to_addrs=[to_email])
 
 
 def _reject_draft(draft_id: int, agency_id: str | None = None, agency_status: str | None = None) -> None:
@@ -175,24 +139,20 @@ def send_draft(draft_id: int) -> dict:
     to_email = (draft.get("to_email") or "").strip()
     agency_id = draft.get("agency_id")
     if not to_email:
-        # Terminal-fail the draft so the 30s scheduler loop stops retrying.
         logger.warning(f"Skip {draft_id}: to_email is empty — marking rejected")
         _reject_draft(draft_id, agency_id, "no_contact")
         return {"ok": False, "reason": "missing_to_email"}
 
-    # ── Safety check: hard opt-out list ──
     if _is_opted_out(to_email):
         logger.info(f"Skip {draft_id}: {to_email} is opted out")
         _reject_draft(draft_id)
         return {"ok": False, "reason": "opted_out"}
 
-    # ── Safety check: already emailed this agency in last 60 days ──
     if _already_sent_to_agency_recently(agency_id):
         logger.info(f"Skip {draft_id}: agency {agency_id} already contacted in last 60 days")
         _reject_draft(draft_id)
         return {"ok": False, "reason": "recently_contacted"}
 
-    # ── Safety check: daily cap ──
     cfg = get_agency_config()
     cap = cfg["agency_send_cap"]
     sent_today = _sent_today_count()
@@ -200,11 +160,7 @@ def send_draft(draft_id: int) -> dict:
         logger.info(f"Skip {draft_id}: daily cap {cap} reached ({sent_today} sent)")
         return {"ok": False, "reason": "daily_cap_reached"}
 
-    # ── Safety check: CAN-SPAM physical address must be configured ──
-    # Fail-closed: the footer is legally required on cold outreach. If
-    # the env var is unset (or silently empty), refuse to send rather
-    # than ship a non-compliant message. Caught by this guard after a
-    # silent hole sent draft #2 without the footer during dry-run.
+    # Fail-closed: footer is legally required on cold outreach.
     if not os.environ.get("AGENCY_SENDER_PHYSICAL_ADDRESS", "").strip():
         logger.error(
             f"Skip {draft_id}: AGENCY_SENDER_PHYSICAL_ADDRESS unset — "
@@ -212,34 +168,33 @@ def send_draft(draft_id: int) -> dict:
         )
         return {"ok": False, "reason": "missing_physical_address"}
 
-    # ── Safety check: Gmail history (prior manual outreach) ──
-    if _gmail_history_has(to_email):
-        logger.info(f"Skip {draft_id}: {to_email} found in Gmail history")
+    if _db_history_has(to_email):
+        logger.info(f"Skip {draft_id}: {to_email} already marked sent in DB")
         _reject_draft(draft_id, agency_id, "previously_contacted")
         return {"ok": False, "reason": "previously_contacted"}
 
-    # ── Compose final body ──
     from_email = (draft.get("from_email") or os.environ.get("AGENCY_SENDER_EMAIL", "")).strip()
     if not from_email:
         return {"ok": False, "reason": "no_from_email"}
     final_body = _compose_final_body(draft["body"])
 
-    # ── Send ──
+    msg, message_id = _build_message(from_email, to_email, draft["subject"], final_body)
+
     try:
-        raw = _build_mime(from_email, to_email, draft["subject"], final_body)
-        svc = _gmail_service()
-        sent = svc.users().messages().send(userId="me", body={"raw": raw}).execute()
+        _smtp_send(from_email, to_email, msg)
+    except smtplib.SMTPAuthenticationError as e:
+        logger.error(f"SMTP auth failed for draft {draft_id}: {e}")
+        return {"ok": False, "reason": "smtp_auth_error"}
     except Exception as e:
-        logger.error(f"Gmail send failed for draft {draft_id}: {e}")
+        logger.error(f"SMTP send failed for draft {draft_id}: {e}")
         return {"ok": False, "reason": f"send_error: {e}"}
 
     now = datetime.now(timezone.utc).isoformat()
     sb.table("agency_outreach_messages").update({
         "status": "sent",
         "sent_at": now,
-        "thread_id": sent.get("threadId"),
-        "message_id": sent.get("id"),
-        "body": final_body,  # persist what we actually sent
+        "message_id": message_id,
+        "body": final_body,
     }).eq("id", draft_id).execute()
 
     sb.table("agency_agencies").update({
@@ -247,7 +202,7 @@ def send_draft(draft_id: int) -> dict:
         "updated_at": now,
     }).eq("id", agency_id).execute()
 
-    return {"ok": True, "message_id": sent.get("id"), "thread_id": sent.get("threadId")}
+    return {"ok": True, "message_id": message_id}
 
 
 if __name__ == "__main__":
