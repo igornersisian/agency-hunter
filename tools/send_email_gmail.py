@@ -12,7 +12,8 @@ Responsibilities:
         d. Daily-cap check
     2. Append the CAN-SPAM physical address footer at SEND time (env-var
        driven, per-sender). The soft opt-out line already lives verbatim
-       inside `templates/cold_v1.md`.
+       inside `templates/cold_v1.md` (gitignored; copy from the
+       `.example.md` and personalize).
     3. Open an SMTP_SSL connection to smtp.gmail.com:465, log in with the
        App Password, send, close. Save the generated Message-ID back to
        the row, flip status to `sent`.

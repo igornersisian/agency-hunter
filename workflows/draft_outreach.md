@@ -6,6 +6,8 @@ Produce a personalized cold-email draft for each agency in
 
 ## The template contract (strict)
 `templates/cold_v1.md` is Igor's hand-written email, stored verbatim.
+The file is gitignored — `templates/cold_v1.example.md` is the public
+placeholder; copy it to `cold_v1.md` and personalize.
 The LLM ONLY generates two fields:
 - `subject_line` (≤ 60 chars, no clickbait, no emoji, no fake `Re:`)
 - `personalized_opener` (1-2 sentences referencing one specific concrete

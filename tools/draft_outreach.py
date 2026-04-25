@@ -1,7 +1,8 @@
 """
 Phase 6 — outreach drafting.
 
-Loads `templates/cold_v1.md` and the agency's `enriched_data`, then calls
+Loads `templates/cold_v1.md` (gitignored — copy `cold_v1.example.md`
+and personalize) and the agency's `enriched_data`, then calls
 OpenAI in JSON mode to produce ONLY:
     {subject_line, personalized_opener, hook_type, hook_reference}
 

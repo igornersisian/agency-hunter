@@ -9,6 +9,7 @@ credentials.json
 token.json
 gmail_credentials.json
 gmail_token.json
+templates/cold_v1.md
 .DS_Store
 *.log
 .claude/
