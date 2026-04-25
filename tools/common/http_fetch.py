@@ -145,10 +145,15 @@ def _fetch_crw(url: str, timeout: int) -> str | None:
     base = os.environ.get("CRW_API_URL", "").rstrip("/")
     if not base:
         return None
+    headers = {}
+    api_key = os.environ.get("CRW_API_KEY", "")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     try:
         resp = httpx.post(
             f"{base}/v1/scrape",
             json={"url": url, "formats": ["markdown"]},
+            headers=headers,
             timeout=timeout,
         )
         if resp.status_code != 200:
