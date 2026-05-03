@@ -18,7 +18,7 @@ across 29 countries, ~360 qualified after classification.
 
 - **Discovers** agencies via Google SERP scraping (29 countries × narrow query templates)
 - **Enriches** each one by crawling their site (services, case studies, stack, team) — uses a self-hosted Cloudflare-bypass scraper before falling back to ScraperAPI
-- **Classifies** stack/service fit with `gpt-4.1-mini` against my resume profile (cheap enough to score thousands of rows)
+- **Classifies** stack/service fit with `gpt-5-mini` against my resume profile (cheap enough to score thousands of rows)
 - **Finds contacts** — extracts personal emails from the site and verifies via DNS. Never role addresses (`info@`, `hello@`); skips rather than guesses
 - **Drafts cold emails** that reference one specific concrete thing about the agency (a case study, a tool, a service). The LLM only writes the opener; the body is a strict template that ships byte-for-byte
 - **Reviews in Telegram** — fit score, pros/cons, draft preview, `[Approve] [Reject] [Edit]` inline buttons
@@ -104,7 +104,7 @@ Python 3.12 · Supabase (Postgres) · OpenAI / OpenRouter · Apify (Google SERP)
 
 ## Notes
 
-- **No paid API costs beyond what's already running.** Classification uses `gpt-4.1-mini` on OpenAI's flex tier; enrichment uses self-hosted CRW first, ScraperAPI as fallback.
+- **No paid API costs beyond what's already running.** Classification uses `gpt-5-mini` on OpenAI's flex tier; enrichment uses self-hosted CRW first, ScraperAPI as fallback.
 - **Compliance.** Soft opt-out line lives verbatim in the template; the CAN-SPAM physical-address footer is appended at send time from an env var (per-sender). Both ship on every email.
 - **No silent decisions.** The agent will ask before reducing scope, skipping work, or anything else that affects results — this is enforced via `CLAUDE.md`.
 - **Sibling project** — the `profile` table is shared with my [job-search-automation](https://github.com/igornersisian) repo. One resume powers both pipelines.

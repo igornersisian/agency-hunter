@@ -160,7 +160,7 @@ def _call_llm(enriched: dict, profile: dict, fit_reasoning: str | None = None,
         )
 
     response = chat_completion(
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         response_format={"type": "json_object"},
         service_tier=service_tier,
         messages=[

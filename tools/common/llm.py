@@ -67,7 +67,7 @@ def _call_provider(provider: str, messages: list, service_tier: str | None = Non
     """
     if provider == "openrouter":
         client = _get_openrouter()
-        model = kwargs.pop("model", "gpt-4.1-mini")
+        model = kwargs.pop("model", "gpt-5-mini")
         kwargs["model"] = f"openai/{model}"
         return client.chat.completions.create(messages=messages, **kwargs)
     else:

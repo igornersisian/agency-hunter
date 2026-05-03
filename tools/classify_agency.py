@@ -282,7 +282,7 @@ def classify_one(agency_id: str, enriched_data: dict, profile: dict,
         )
 
     response = chat_completion(
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         response_format={"type": "json_object"},
         service_tier="flex",
         messages=[

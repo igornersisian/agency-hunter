@@ -26,7 +26,7 @@ signals via LLM.
    - Output truncated to 15k chars.
 3. **Nothing raw ever reaches the LLM.** Concatenate the cleaned chunks,
    truncate combined text to 30k chars.
-4. Call `gpt-4.1-mini` in JSON mode with the strict extraction schema
+4. Call `gpt-5-mini` in JSON mode with the strict extraction schema
    (services, tools, team, case studies, visible emails, red flag notes).
 5. Persist to `enriched_data`; lift selected fields (name, country,
    city, team_size, specialization) to dedicated columns.

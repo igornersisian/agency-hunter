@@ -149,7 +149,7 @@ def _fetch_pages(base_url: str, backend: str = "jina") -> str:
 def _extract_via_llm(text: str) -> dict:
     """Send cleaned text to OpenAI and parse the JSON extraction."""
     response = chat_completion(
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         response_format={"type": "json_object"},
         service_tier="flex",
         messages=[
