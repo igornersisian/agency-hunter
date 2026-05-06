@@ -47,10 +47,6 @@ template gives the LLM two practical advantages:
    `templates/cold_v1.md`. Since the LLM never outputs the body (only
    opener + subject) and `_assemble_body` is a pure string replace,
    the line ships byte-for-byte without any chance of mangling.
-2. **Physical address footer** is appended at SEND time by
-   `send_email_gmail.py:_compose_final_body()` — pulled from the
-   `AGENCY_SENDER_PHYSICAL_ADDRESS` env var. Kept env-driven because
-   it's per-sender and may change; not burned into the template.
 
 ## Tool
 `tools/draft_outreach.py`

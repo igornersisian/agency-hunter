@@ -7,7 +7,7 @@ and deliverability safeguard in place.
 ## Inputs
 - `agency_outreach_messages` row with `status='ready_to_send'`
 - `credentials.json` + `token.json` (Gmail OAuth)
-- `AGENCY_SENDER_EMAIL`, `AGENCY_SENDER_PHYSICAL_ADDRESS` env vars
+- `AGENCY_SENDER_EMAIL` env var
 
 ## Pre-send safety checks (in order)
 1. **Opt-out list** — `agency_opt_outs` table. Hit → reject the draft.
@@ -30,17 +30,15 @@ and deliverability safeguard in place.
    already contains the verbatim template (including the soft opt-out
    line) with the personalized opener substituted in by
    `draft_outreach._assemble_body()`.
-2. Append the **physical address footer**:
-   `\n\n---\n{AGENCY_SENDER_PHYSICAL_ADDRESS}\n`
-3. Build an `email.message.EmailMessage`, base64url encode, POST to
+2. Build an `email.message.EmailMessage`, base64url encode, POST to
    `users.messages.send`.
-4. Persist `message_id`, `thread_id`, `sent_at`; flip
+3. Persist `message_id`, `thread_id`, `sent_at`; flip
    `agency_outreach_messages.status='sent'` and
    `agency_agencies.status='sent'`.
 
-The soft opt-out line is already part of the template on disk — no
-send-time injection needed. The physical address stays env-driven
-because it's per-sender and changes independently from the template.
+The body ships exactly as drafted — no send-time injection. Anything
+that needs to be in every email (opt-out line, signature, address)
+must live in `templates/cold_v1.md`.
 
 ## Deliverability notes
 - Personal Gmail inherits sender reputation — no warmup needed.
@@ -50,11 +48,12 @@ because it's per-sender and changes independently from the template.
   For MVP we just cap daily count and let Igor approve during his day.
 
 ## Legal baseline (CAN-SPAM)
-- Physical address in every message ✅
 - Clear identification of the sender ✅
 - Honest subject line ✅
 - Working opt-out (the soft "let me know" line counts as informal
   opt-out; `agency_opt_outs` captures the real ones) ✅
+- Physical address: not appended by code — must live in
+  `templates/cold_v1.md` if needed.
 
 ## Tool
 `tools/send_email_gmail.py`

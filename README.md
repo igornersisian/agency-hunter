@@ -22,7 +22,7 @@ across 29 countries, ~360 qualified after classification.
 - **Finds contacts** — extracts personal emails from the site and verifies via DNS. Never role addresses (`info@`, `hello@`); skips rather than guesses
 - **Drafts cold emails** that reference one specific concrete thing about the agency (a case study, a tool, a service). The LLM only writes the opener; the body is a strict template that ships byte-for-byte
 - **Reviews in Telegram** — fit score, pros/cons, draft preview, `[Approve] [Reject] [Edit]` inline buttons
-- **Sends** via Gmail SMTP with a respect-the-recipient send window, daily caps, 60-day duplicate guard, and a CAN-SPAM footer
+- **Sends** via Gmail SMTP with a respect-the-recipient send window, daily caps, and 60-day duplicate guard
 
 ## Why the architecture matters (WAT)
 
@@ -105,6 +105,6 @@ Python 3.12 · Supabase (Postgres) · OpenAI / OpenRouter · Apify (Google SERP)
 ## Notes
 
 - **No paid API costs beyond what's already running.** Classification uses `gpt-5-mini` on OpenAI's flex tier; enrichment uses self-hosted CRW first, ScraperAPI as fallback.
-- **Compliance.** Soft opt-out line lives verbatim in the template; the CAN-SPAM physical-address footer is appended at send time from an env var (per-sender). Both ship on every email.
+- **Compliance.** Soft opt-out line lives verbatim in the template and ships on every email.
 - **No silent decisions.** The agent will ask before reducing scope, skipping work, or anything else that affects results — this is enforced via `CLAUDE.md`.
 - **Sibling project** — the `profile` table is shared with my [job-search-automation](https://github.com/igornersisian) repo. One resume powers both pipelines.

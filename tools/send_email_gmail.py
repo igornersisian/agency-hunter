@@ -10,11 +10,7 @@ Responsibilities:
            history scan, which required OAuth + gmail.readonly and broke
            every 7 days in Testing-mode apps.
         d. Daily-cap check
-    2. Append the CAN-SPAM physical address footer at SEND time (env-var
-       driven, per-sender). The soft opt-out line already lives verbatim
-       inside `templates/cold_v1.md` (gitignored; copy from the
-       `.example.md` and personalize).
-    3. Open an SMTP_SSL connection to smtp.gmail.com:465, log in with the
+    2. Open an SMTP_SSL connection to smtp.gmail.com:465, log in with the
        App Password, send, close. Save the generated Message-ID back to
        the row, flip status to `sent`.
 """
@@ -127,15 +123,6 @@ def _db_history_has(email: str) -> bool:
     return bool(rows.data)
 
 
-def _compose_final_body(assembled_body: str) -> str:
-    """Append the CAN-SPAM physical address footer at send time."""
-    body = assembled_body
-    address = os.environ.get("AGENCY_SENDER_PHYSICAL_ADDRESS", "").strip()
-    if address:
-        body = f"{body.rstrip()}\n\n---\n{address}\n"
-    return body
-
-
 def _build_message(from_email: str, to_email: str, subject: str, body: str) -> tuple[EmailMessage, str]:
     msg = EmailMessage()
     msg["To"] = to_email
@@ -196,22 +183,12 @@ def send_draft(draft_id: int) -> dict:
         return {"ok": False, "reason": "daily_cap_reached"}
     from_email, password = picked
 
-    # Fail-closed: footer is legally required on cold outreach.
-    if not os.environ.get("AGENCY_SENDER_PHYSICAL_ADDRESS", "").strip():
-        logger.error(
-            f"Skip {draft_id}: AGENCY_SENDER_PHYSICAL_ADDRESS unset — "
-            f"refusing to send without CAN-SPAM footer"
-        )
-        return {"ok": False, "reason": "missing_physical_address"}
-
     if _db_history_has(to_email):
         logger.info(f"Skip {draft_id}: {to_email} already marked sent in DB")
         _reject_draft(draft_id, agency_id, "previously_contacted")
         return {"ok": False, "reason": "previously_contacted"}
 
-    final_body = _compose_final_body(draft["body"])
-
-    msg, message_id = _build_message(from_email, to_email, draft["subject"], final_body)
+    msg, message_id = _build_message(from_email, to_email, draft["subject"], draft["body"])
 
     try:
         _smtp_send(from_email, password, to_email, msg)
@@ -227,7 +204,6 @@ def send_draft(draft_id: int) -> dict:
         "status": "sent",
         "sent_at": now,
         "message_id": message_id,
-        "body": final_body,
         "from_email": from_email,
     }).eq("id", draft_id).execute()
 
