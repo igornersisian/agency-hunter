@@ -27,13 +27,16 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import logging
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import httpx
+
 sys.path.insert(0, os.path.dirname(__file__))
 
-from common.supabase_client import get_supabase
+from common.supabase_client import get_supabase, reset_supabase
 from common.profile import get_profile, get_agency_config
 from common.domain_utils import is_directory_domain
 
@@ -52,9 +55,26 @@ ENRICH_WORKERS = 5
 CLASSIFY_WORKERS = 5
 
 
+def _db_retry(fn):
+    """Run one Supabase operation, retrying with backoff on transient httpx
+    errors (flaky local DNS + the long-lived-client HTTP/2 bug). Rebuilds
+    the client between attempts. Same pattern as common.persist."""
+    backoffs = (0, 2, 5, 15)
+    for attempt, wait in enumerate(backoffs, 1):
+        if wait:
+            time.sleep(wait)
+            reset_supabase()
+        try:
+            return fn()
+        except (httpx.HTTPError, httpx.LocalProtocolError) as e:
+            logger.warning(f"db retry {attempt}/{len(backoffs)}: {e}")
+            if attempt == len(backoffs):
+                raise
+
+
 def _enrich_phase() -> int:
-    sb = get_supabase()
-    rows = sb.table("agency_agencies").select("id,website_url").eq("status", "discovered").execute().data or []
+    rows = _db_retry(lambda: get_supabase().table("agency_agencies")
+                     .select("id,website_url").eq("status", "discovered").execute()).data or []
     if not rows:
         return 0
 
@@ -67,7 +87,8 @@ def _enrich_phase() -> int:
     for row in rows:
         if is_directory_domain(row["id"]):
             logger.info(f"enrich safety net: rejecting blacklisted domain {row['id']}")
-            sb.table("agency_agencies").update({"status": "rejected"}).eq("id", row["id"]).execute()
+            _db_retry(lambda: get_supabase().table("agency_agencies")
+                      .update({"status": "rejected"}).eq("id", row["id"]).execute())
             continue
         kept.append(row)
     rows = kept
@@ -76,7 +97,8 @@ def _enrich_phase() -> int:
 
     # Flip to enriching first so re-runs don't double-process
     for row in rows:
-        sb.table("agency_agencies").update({"status": "enriching"}).eq("id", row["id"]).execute()
+        _db_retry(lambda: get_supabase().table("agency_agencies")
+                  .update({"status": "enriching"}).eq("id", row["id"]).execute())
 
     success = 0
     with ThreadPoolExecutor(max_workers=ENRICH_WORKERS) as pool:
@@ -88,23 +110,25 @@ def _enrich_phase() -> int:
                     success += 1
             except Exception as e:
                 logger.error(f"enrich_one failed for {row['id']}: {e}")
-                sb.table("agency_agencies").update({"status": "enrich_failed"}).eq("id", row["id"]).execute()
+                _db_retry(lambda: get_supabase().table("agency_agencies")
+                          .update({"status": "enrich_failed"}).eq("id", row["id"]).execute())
     return success
 
 
 def _classify_phase() -> tuple[int, int]:
-    sb = get_supabase()
     profile = get_profile() or {}
     cfg = get_agency_config()
     threshold = cfg["agency_fit_threshold"]
     target_countries = cfg["agency_target_countries"]
 
-    rows = sb.table("agency_agencies").select("id,country,enriched_data").eq("status", "enriched").execute().data or []
+    rows = _db_retry(lambda: get_supabase().table("agency_agencies")
+                     .select("id,country,enriched_data").eq("status", "enriched").execute()).data or []
     if not rows:
         return 0, 0
 
     for row in rows:
-        sb.table("agency_agencies").update({"status": "classifying"}).eq("id", row["id"]).execute()
+        _db_retry(lambda: get_supabase().table("agency_agencies")
+                  .update({"status": "classifying"}).eq("id", row["id"]).execute())
 
     classified = 0
     qualified = 0
@@ -126,18 +150,19 @@ def _classify_phase() -> tuple[int, int]:
                     ]
                 else:
                     new_status = "qualified" if result["fit_score"] >= threshold else "rejected"
-                sb.table("agency_agencies").update({
+                _db_retry(lambda: get_supabase().table("agency_agencies").update({
                     **result,
                     "status": new_status,
                     "last_classified_at": datetime.now(timezone.utc).isoformat(),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
-                }).eq("id", row["id"]).execute()
+                }).eq("id", row["id"]).execute())
                 classified += 1
                 if new_status == "qualified":
                     qualified += 1
             except Exception as e:
                 logger.error(f"classify_one failed for {row['id']}: {e}")
-                sb.table("agency_agencies").update({"status": "classify_failed"}).eq("id", row["id"]).execute()
+                _db_retry(lambda: get_supabase().table("agency_agencies")
+                          .update({"status": "classify_failed"}).eq("id", row["id"]).execute())
     return classified, qualified
 
 
