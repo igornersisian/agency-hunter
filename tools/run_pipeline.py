@@ -10,11 +10,13 @@ Phases:
     1. Dedup       — fold collisions
     2. Enrichment  — `discovered` → `enriched` (LLM extraction)
     3. Classify    — `enriched`   → `qualified` | `rejected`
-    4. Drafting    — `qualified`  → `ready_to_send` | `no_hook_skip` | `no_contact`
 
-Sending is NOT part of the auto-pipeline. Drafts wait for manual
-/approve in the Telegram review UI. This is explicit per Igor's plan —
-he wants eyes on every outbound message for MVP.
+Outreach is fully manual (since 2026-06): the pipeline stops at
+classification. Qualified agencies surface as cards in the Telegram
+/review queue; Igor researches each site, writes and sends the email
+himself from Gmail, then marks the card Sent/Skip. No AI-generated
+messages (LLM drafting survives only as an opt-in CLI:
+`python tools/draft_outreach.py`).
 
 Parallelism mirrors the sibling project: ThreadPoolExecutor batches
 inside each phase but phases run sequentially so the state machine
@@ -39,7 +41,6 @@ import discover_google_search
 import dedup_canonicalize
 import enrich_agency
 import classify_agency
-import draft_outreach
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -49,7 +50,6 @@ logger = logging.getLogger(__name__)
 
 ENRICH_WORKERS = 5
 CLASSIFY_WORKERS = 5
-DRAFT_WORKERS = 5
 
 
 def _enrich_phase() -> int:
@@ -141,29 +141,10 @@ def _classify_phase() -> tuple[int, int]:
     return classified, qualified
 
 
-def _draft_phase() -> int:
-    sb = get_supabase()
-    rows = sb.table("agency_agencies").select("id").eq("status", "qualified").execute().data or []
-    if not rows:
-        return 0
-
-    drafts = 0
-    with ThreadPoolExecutor(max_workers=DRAFT_WORKERS) as pool:
-        futures = {pool.submit(draft_outreach.draft_for_agency, row["id"]): row for row in rows}
-        for fut in as_completed(futures):
-            row = futures[fut]
-            try:
-                if fut.result():
-                    drafts += 1
-            except Exception as e:
-                logger.error(f"draft_for_agency failed for {row['id']}: {e}")
-    return drafts
-
-
 def run_pipeline(skip_discovery: bool = False, country: str | None = None,
                  max_queries: int | None = None) -> dict:
     """Run the full pipeline end-to-end. Returns a summary dict."""
-    summary = {"discovered": 0, "enriched": 0, "classified": 0, "qualified": 0, "drafts": 0}
+    summary = {"discovered": 0, "enriched": 0, "classified": 0, "qualified": 0}
 
     if not skip_discovery:
         logger.info("Phase 0/1: discovery")
@@ -186,9 +167,6 @@ def run_pipeline(skip_discovery: bool = False, country: str | None = None,
     classified, qualified = _classify_phase()
     summary["classified"] = classified
     summary["qualified"] = qualified
-
-    logger.info("Phase 4: outreach drafting")
-    summary["drafts"] = _draft_phase()
 
     logger.info(f"Pipeline complete: {summary}")
     return summary

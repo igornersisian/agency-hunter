@@ -1,5 +1,11 @@
 """
-Phase 6 — outreach drafting.
+Outreach drafting — CLI-only since 2026-06.
+
+Not wired into the pipeline or the Telegram bot anymore: outreach is
+fully manual (Igor writes and sends emails himself from Gmail; the bot
+only shows agency cards). Run `python tools/draft_outreach.py` directly
+if LLM drafting is ever needed again; resulting `ready_to_send` drafts
+still surface in the bot's /review queue with Approve/Reject/Edit.
 
 Loads `templates/cold_v1.md` (gitignored — copy `cold_v1.example.md`
 and personalize) and the agency's `enriched_data`, then calls

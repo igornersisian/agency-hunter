@@ -8,19 +8,23 @@ Commands:
     /start      short intro
     /help       command list
     /stats      counts per status in agency_agencies
-    /review     show the next `ready_to_send` draft card
-    /approve N  send draft #N via Gmail
+    /review     show the next agency card to contact manually
+    /approve N  send draft #N via Gmail (CLI-created drafts only)
     /reject  N  mark draft #N as rejected (no send)
     /edit    N <feedback>   regenerate draft #N with written feedback
-    /fetch      trigger a discovery + enrichment + classify + draft pass
+    /fetch      trigger a discovery + enrichment + classify pass
     /threshold [int]        view / set agency_fit_threshold on profile
     /send_cap  [int]        view / set agency_send_cap on profile
     /countries [CC,CC,...]  view / set agency_target_countries on profile
 
-The review card shows: agency name + domain + country, fit_score,
-bulleted pros + cons from fit_breakdown, subject + body preview,
-and three inline buttons [Approve] [Reject] [Edit]. /edit prompts for
-free-text feedback in a reply.
+Outreach is manual (since 2026-06): /review surfaces qualified agencies
+as info cards (site link, fit breakdown, tools, any known emails). Igor
+researches the site, writes and sends the email himself from Gmail, then
+presses [✉️ Sent] (→ status 'sent') or [⏭ Skip] (→ 'disqualified').
+
+The draft approve/edit/schedule machinery below is kept only for drafts
+created via the opt-in CLI (`python tools/draft_outreach.py`) — the bot
+itself never generates messages.
 """
 
 from __future__ import annotations
@@ -85,7 +89,6 @@ def _save_profile_key(key: str, value) -> None:
 # Per-chat pending-input state. Each chat can be waiting for at most
 # one kind of free-text follow-up at a time. Shape:
 #   { chat_id: ("edit_feedback",  draft_id) }
-#   { chat_id: ("no_contact_email", agency_id) }
 _chat_pending: dict[int, tuple[str, object]] = {}
 
 
@@ -96,36 +99,38 @@ _chat_pending: dict[int, tuple[str, object]] = {}
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Agency Hunter bot ready.\n\n"
-        "Use /review to triage the next draft, /fetch to run a discovery pass, "
-        "/stats to see the pipeline state, /help for the full command list."
+        "Use /review to get the next agency to contact, /fetch to run a "
+        "discovery pass, /stats to see the pipeline state, /help for the "
+        "full command list."
     )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Plain text — underscores in command names (/no_contact, /send_cap)
-    # break Telegram's Markdown parser, so we avoid parse_mode entirely.
+    # Plain text — underscores in command names (/send_cap) break
+    # Telegram's Markdown parser, so we avoid parse_mode entirely.
     await update.message.reply_text(
         "Agency Hunter\n"
         "\n"
-        "/fetch    run pipeline (discover → enrich → classify → draft)\n"
-        "/review   next item: a draft to approve OR an agency needing an email\n"
+        "/fetch    run pipeline (discover → enrich → classify)\n"
+        "/review   next agency card to contact manually\n"
         "/stats    queue / outbox / pool summary\n"
         "\n"
-        "REVIEW BUTTONS\n"
+        "MANUAL OUTREACH\n"
+        "  The card shows the site link + fit info + any known emails.\n"
+        "  Research the site, write and send the email yourself from\n"
+        "  Gmail, then press a button:\n"
+        "  ✉️ Sent   mark agency contacted\n"
+        "  ⏭ Skip   mark agency disqualified\n"
+        "\n"
+        "CLI DRAFTS (only if you ran tools/draft_outreach.py)\n"
         "  ✅ Approve   schedule for send (Mon-Fri 09-17 recipient-local)\n"
         "  ❌ Reject    discard\n"
         "  ✏️ Edit     rewrite opener — reply with feedback text\n"
-        "  ➕ Add email  (no-email cards) type an address to auto-draft\n"
         "\n"
         "CONFIG (no args shows current value)\n"
         "  /threshold N      fit score cutoff (default 70)\n"
-        "  /send_cap N       daily Gmail send ceiling\n"
-        "  /countries CC,CC  ISO-2 target countries\n"
-        "\n"
-        "SAFETY\n"
-        "  No auto-send. Role inboxes (info@, sales@) never targeted.\n"
-        "  Pre-send dedup — same address won't get emailed twice.\n"
-        "  Reply \"not interested\" → permanent opt-out."
+        "  /send_cap N       daily Gmail send ceiling (CLI drafts)\n"
+        "  /countries CC,CC  ISO-2 target countries"
     )
 
 
@@ -141,8 +146,8 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             .eq("status", status).execute().count or 0
 
     # TO REVIEW — what's waiting on a human decision
-    drafts_waiting    = _draft_count("ready_to_send")
-    agencies_no_email = _agency_count("no_contact")
+    drafts_waiting = _draft_count("ready_to_send")
+    to_contact     = _agency_count("qualified") + _agency_count("no_contact")
 
     # OUTBOX — approved drafts in flight + everything ever sent
     drafts_scheduled = _draft_count("scheduled")
@@ -167,8 +172,8 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "📊 Agency Hunter",
         "",
         "TO REVIEW",
-        f"  drafts waiting:    {drafts_waiting}",
-        f"  no-email agencies: {agencies_no_email}",
+        f"  to contact (manual): {to_contact}",
+        f"  CLI drafts waiting:  {drafts_waiting}",
         "",
         "OUTBOX",
         f"  scheduled:   {drafts_scheduled}",
@@ -342,7 +347,10 @@ def _fetch_next_draft() -> tuple[dict | None, dict | None]:
 async def _send_next_review(reply_target) -> None:
     """Send the next review card to the given target (update.message or
     query.message — both expose reply_text). Used by /review and
-    auto-advance after approve/reject."""
+    auto-advance after a button press.
+
+    CLI-created drafts (ready_to_send) take precedence; otherwise the
+    next manual-outreach agency card is shown."""
     draft, agency = _fetch_next_draft()
     if draft and agency:
         keyboard = InlineKeyboardMarkup([[
@@ -357,15 +365,14 @@ async def _send_next_review(reply_target) -> None:
         )
         return
 
-    nc_agency = _fetch_next_no_contact()
-    if nc_agency:
+    next_agency = _fetch_next_outreach()
+    if next_agency:
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("➕ Add email", callback_data=f"nc_add_email:{nc_agency['id']}"),
-            InlineKeyboardButton("❌ Reject",    callback_data=f"nc_reject:{nc_agency['id']}"),
+            InlineKeyboardButton("✉️ Sent", callback_data=f"manual_sent:{next_agency['id']}"),
+            InlineKeyboardButton("⏭ Skip", callback_data=f"manual_skip:{next_agency['id']}"),
         ]])
         await reply_target.reply_text(
-            "No drafts ready. Next agency with no scraped email:\n\n"
-            + _fmt_no_contact_card(nc_agency),
+            _fmt_outreach_card(next_agency),
             parse_mode="HTML",
             reply_markup=keyboard,
             disable_web_page_preview=True,
@@ -373,13 +380,13 @@ async def _send_next_review(reply_target) -> None:
         return
 
     await reply_target.reply_text(
-        "Nothing to review — no ready drafts and no no-contact agencies waiting."
+        "Nothing to review — no agencies waiting to be contacted."
     )
 
 
 async def cmd_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Unified review queue: first surfaces ready_to_send drafts, then
-    falls through to no_contact agencies waiting for a manual email."""
+    """Review queue: CLI drafts first (if any), then manual-outreach
+    agency cards ordered by fit score."""
     await _send_next_review(update.message)
 
 
@@ -559,22 +566,19 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await query.message.reply_text(
             f"Send your feedback for draft {target} as the next message. (or /cancel)"
         )
-    elif action == "nc_add_email":
-        _chat_pending[query.message.chat_id] = ("no_contact_email", target)
-        await query.message.reply_text(
-            f"Send the email address for <b>{_h(target)}</b> as the next message. "
-            f"(or /cancel)",
-            parse_mode="HTML",
-        )
-    elif action == "nc_reject":
-        msg = await _do_nc_reject(target)
+    elif action == "manual_sent":
+        msg = await _do_manual_sent(target)
+        await query.message.reply_text(msg)
+        await _send_next_review(query.message)
+    elif action == "manual_skip":
+        msg = await _do_manual_skip(target)
         await query.message.reply_text(msg)
         await _send_next_review(query.message)
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Free-text handler: catches follow-up input for pending two-step flows
-    (/edit feedback or /no_contact email)."""
+    (/edit feedback)."""
     chat_id = update.effective_chat.id
     if chat_id not in _chat_pending:
         return
@@ -587,25 +591,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if kind == "edit_feedback":
         await _regenerate(update, target, text)
-    elif kind == "no_contact_email":
-        await _handle_nc_email(update, target, text)
 
 
 # ---------------------------------------------------------------------------
-# /no_contact — manual email input for agencies with no scraped address
+# Manual outreach — agency cards Igor contacts himself from Gmail
 # ---------------------------------------------------------------------------
 
-import re as _re
-
-_EMAIL_RE = _re.compile(r"^[\w.+\-]+@[\w\-]+\.[\w.\-]+$")
-
-
-def _fetch_next_no_contact() -> dict | None:
+def _fetch_next_outreach() -> dict | None:
+    """Next agency to contact manually: qualified rows plus legacy
+    no_contact rows (contact-finding is manual now anyway), best fit
+    first."""
     sb = get_supabase()
     rows = (
         sb.table("agency_agencies")
         .select("id,name,country,website_url,short_description,fit_score,fit_breakdown,enriched_data")
-        .eq("status", "no_contact")
+        .in_("status", ["qualified", "no_contact"])
         .order("fit_score", desc=True)
         .limit(1)
         .execute()
@@ -615,10 +615,36 @@ def _fetch_next_no_contact() -> dict | None:
     return rows[0] if rows else None
 
 
-def _fmt_no_contact_card(agency: dict) -> str:
+def _known_emails(agency: dict) -> list[str]:
+    """Collect any emails already on file (enrichment + manual contacts).
+    Purely informational — Igor verifies on the site himself."""
+    enriched = _as_dict(agency.get("enriched_data"))
+    emails: list[str] = []
+    best = (enriched.get("best_contact_email") or "").strip().lower()
+    if best and "@" in best:
+        emails.append(best)
+    for e in enriched.get("visible_emails") or []:
+        e = (e or "").strip().lower()
+        if e and "@" in e and e not in emails:
+            emails.append(e)
+    try:
+        contacts = get_supabase().table("agency_contacts").select("email") \
+            .eq("agency_id", agency["id"]).execute().data or []
+        for row in contacts:
+            e = (row.get("email") or "").strip().lower()
+            if e and e not in emails:
+                emails.append(e)
+    except Exception as e:
+        logger.warning(f"contact lookup failed for {agency['id']}: {e}")
+    return emails[:5]
+
+
+def _fmt_outreach_card(agency: dict) -> str:
     breakdown = _as_dict(agency.get("fit_breakdown"))
     pros = breakdown.get("pros") or []
+    cons = breakdown.get("cons") or []
     pros_block = "\n".join(f"  + {_h(p)}" for p in pros[:4]) or "  (none)"
+    cons_block = "\n".join(f"  - {_h(c)}" for c in cons[:3]) or "  (none)"
     sub_block = _h(_fmt_sub_scores(breakdown))
 
     enriched = _as_dict(agency.get("enriched_data"))
@@ -629,6 +655,9 @@ def _fmt_no_contact_card(agency: dict) -> str:
     if len(desc) > 300:
         desc = desc[:300] + "…"
     desc = _h(desc)
+
+    emails = _known_emails(agency)
+    emails_block = ", ".join(f"<code>{_h(e)}</code>" for e in emails) or "—"
 
     name = _h(agency.get("name") or agency["id"])
     country = _h(agency.get("country") or "??")
@@ -641,119 +670,31 @@ def _fmt_no_contact_card(agency: dict) -> str:
         f"{sub_block}\n\n"
         f"{desc}\n\n"
         f"<b>Tools:</b> {tools}\n"
-        f"<b>Services:</b> {services}\n\n"
+        f"<b>Services:</b> {services}\n"
+        f"<b>Known emails:</b> {emails_block}\n\n"
         f"<b>Pros:</b>\n{pros_block}\n\n"
-        f"<i>No email was scraped from their site. Add one manually or reject.</i>"
+        f"<b>Cons:</b>\n{cons_block}\n\n"
+        f"<i>Write and send the email yourself, then press ✉️ Sent. "
+        f"⏭ Skip disqualifies.</i>"
     )
 
 
-async def cmd_no_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    agency = _fetch_next_no_contact()
-    if not agency:
-        await update.message.reply_text("No agencies waiting in no_contact.")
-        return
-
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("➕ Add email", callback_data=f"nc_add_email:{agency['id']}"),
-        InlineKeyboardButton("❌ Reject",    callback_data=f"nc_reject:{agency['id']}"),
-    ]])
-    await update.message.reply_text(
-        _fmt_no_contact_card(agency),
-        parse_mode="HTML",
-        reply_markup=keyboard,
-        disable_web_page_preview=True,
-    )
-
-
-async def _do_nc_reject(agency_id: str) -> str:
+async def _do_manual_sent(agency_id: str) -> str:
     sb = get_supabase()
-    sb.table("agency_agencies").update({"status": "rejected"}).eq("id", agency_id).execute()
-    return f"❌ Rejected {agency_id}"
+    sb.table("agency_agencies").update({
+        "status": "sent",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", agency_id).execute()
+    return f"✉️ Marked sent — {agency_id}"
 
 
-def _is_non_sendable_email(email: str) -> bool:
-    local = email.split("@", 1)[0].lower()
-    return local in {"noreply", "no-reply", "donotreply", "do-not-reply",
-                     "mailer-daemon", "postmaster"}
-
-
-async def _handle_nc_email(update: Update, agency_id: str, email: str) -> None:
-    """User supplied an email address for a no_contact agency. Validate,
-    insert as a contact, run draft_for_agency, show the resulting draft card."""
-    email = email.strip().lower()
-    if not _EMAIL_RE.match(email):
-        await update.message.reply_text(
-            f"<code>{_h(email)}</code> doesn't look like a valid email. "
-            f"Send /no_contact to try again.",
-            parse_mode="HTML",
-        )
-        return
-    if _is_non_sendable_email(email):
-        await update.message.reply_text(
-            f"<code>{_h(email)}</code> is a non-sendable system address. "
-            f"Send /no_contact to try again.",
-            parse_mode="HTML",
-        )
-        return
-
+async def _do_manual_skip(agency_id: str) -> str:
     sb = get_supabase()
-
-    # Insert (or skip if already there)
-    existing = sb.table("agency_contacts").select("id").eq("agency_id", agency_id).eq("email", email).execute().data or []
-    if existing:
-        contact_id = existing[0]["id"]
-    else:
-        inserted = sb.table("agency_contacts").insert({
-            "agency_id": agency_id,
-            "email": email,
-            "email_status": "manual_tg_input",
-            "email_confidence": 100,  # user vouched for it
-            "source": "telegram_manual",
-            "is_primary": True,
-        }).execute()
-        contact_id = inserted.data[0]["id"]
-
-    # Flip agency to contact_found so draft_for_agency will accept it
-    sb.table("agency_agencies").update({"status": "contact_found"}).eq("id", agency_id).execute()
-
-    await update.message.reply_text(
-        f"✔ Added <code>{_h(email)}</code> — drafting now…",
-        parse_mode="HTML",
-    )
-
-    # Draft the email in a background thread
-    def _draft_sync():
-        from draft_outreach import draft_for_agency
-        return draft_for_agency(agency_id)
-
-    loop = asyncio.get_running_loop()
-    try:
-        draft_id = await loop.run_in_executor(None, _draft_sync)
-    except Exception as e:
-        await update.message.reply_text(f"Drafting failed: {e}")
-        return
-
-    if not draft_id:
-        await update.message.reply_text(
-            f"Could not generate a draft — no concrete hook found in enriched data. "
-            f"Agency marked `no_hook_skip`."
-        )
-        return
-
-    # Show the fresh draft card with the normal review buttons
-    draft = sb.table("agency_outreach_messages").select("*").eq("id", draft_id).limit(1).execute().data[0]
-    agency = sb.table("agency_agencies").select("*").eq("id", agency_id).limit(1).execute().data[0]
-
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Approve", callback_data=f"approve:{draft_id}"),
-        InlineKeyboardButton("❌ Reject",  callback_data=f"reject:{draft_id}"),
-        InlineKeyboardButton("✏️ Edit",    callback_data=f"edit:{draft_id}"),
-    ]])
-    await update.message.reply_text(
-        "Draft ready:\n\n" + _fmt_draft_card(draft, agency),
-        parse_mode="HTML",
-        reply_markup=keyboard,
-    )
+    sb.table("agency_agencies").update({
+        "status": "disqualified",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", agency_id).execute()
+    return f"⏭ Skipped {agency_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -930,7 +871,7 @@ async def scheduler_tick(context: ContextTypes.DEFAULT_TYPE) -> None:
 # ---------------------------------------------------------------------------
 
 async def cmd_fetch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Starting discovery → enrich → classify → draft…")
+    await update.message.reply_text("Starting discovery → enrich → classify…")
 
     def _run_sync():
         from run_pipeline import run_pipeline
@@ -949,7 +890,7 @@ async def cmd_fetch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"enriched:   {summary.get('enriched',   0)}\n"
         f"classified: {summary.get('classified', 0)}\n"
         f"qualified:  {summary.get('qualified',  0)}\n"
-        f"drafts:     {summary.get('drafts',     0)}"
+        f"Use /review to start contacting."
     )
 
 
@@ -968,7 +909,6 @@ def main() -> None:
     app.add_handler(CommandHandler("approve", cmd_approve))
     app.add_handler(CommandHandler("reject", cmd_reject))
     app.add_handler(CommandHandler("edit", cmd_edit))
-    app.add_handler(CommandHandler("no_contact", cmd_no_contact))
     app.add_handler(CommandHandler("fetch", cmd_fetch))
     app.add_handler(CommandHandler("threshold", cmd_threshold))
     app.add_handler(CommandHandler("send_cap", cmd_send_cap))
