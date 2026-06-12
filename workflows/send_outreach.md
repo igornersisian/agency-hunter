@@ -1,6 +1,15 @@
 # Workflow: Send outreach
 
-## Objective
+> **STATUS (since 2026-06-12): Igor sends emails himself from Gmail.**
+> The bot only shows agency cards (`/review`) and records the outcome via
+> the ✉️ Sent / ⏭ Skip buttons. The automated Gmail send path below
+> applies ONLY to drafts created via the opt-in CLI
+> (`python tools/draft_outreach.py`) and then approved in Telegram.
+> Deliverability common sense still applies to manual sends: ~15/day per
+> Gmail account, no second touch within 60 days (check the agency card —
+> `previously_contacted`/`sent` rows never re-surface in the queue).
+
+## Objective (legacy CLI path)
 Actually deliver approved drafts via personal Gmail, with every legal
 and deliverability safeguard in place.
 

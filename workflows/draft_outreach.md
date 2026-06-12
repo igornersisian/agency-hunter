@@ -1,8 +1,23 @@
 # Workflow: Draft outreach
 
-## Objective
-Produce a personalized cold-email draft for each agency in
-`status='contact_found'`, ready for Igor's Telegram review.
+> **STATUS (since 2026-06-12): outreach is fully manual — AI does NOT
+> generate messages.** The pipeline stops at classification. The Telegram
+> `/review` command surfaces qualified agencies (`status IN ('qualified',
+> 'no_contact')`, best fit first) as info cards: site link, fit breakdown,
+> tools/services, any known emails. Igor researches the site, writes and
+> sends the email himself from Gmail, then presses **✉️ Sent** (→
+> `status='sent'`) or **⏭ Skip** (→ `'disqualified'`). Manual sends create
+> no `agency_outreach_messages` row, so bot reply-tracking doesn't apply —
+> Igor watches his own inbox.
+>
+> Everything below documents the LLM drafting path, which survives ONLY
+> as an opt-in CLI (`python tools/draft_outreach.py`). It is not wired
+> into `run_pipeline.py` or the bot; CLI-created `ready_to_send` drafts
+> still surface in `/review` with Approve/Reject/Edit.
+
+## Objective (legacy CLI path)
+Produce a personalized cold-email draft for each qualified agency,
+ready for Igor's Telegram review.
 
 ## The template contract (strict)
 `templates/cold_v1.md` is Igor's hand-written email, stored verbatim.

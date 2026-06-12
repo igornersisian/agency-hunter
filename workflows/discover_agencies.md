@@ -29,6 +29,33 @@ python tools/discover_google_search.py --dry-run            # don't write
 python tools/discover_google_search.py --country NZ --max 5 # smoke test
 ```
 
+### Round-3 modes: `v2` and `local` (added 2026-06-12)
+
+```bash
+python tools/discover_google_search.py --mode v2                    # 142 queries, 1 Apify run
+python tools/discover_google_search.py --mode local                 # 121 queries, 10 Apify runs
+python tools/discover_google_search.py --mode local --language de   # one language only
+```
+
+- `v2` reads `v2_worldwide_templates` (26, 2025-26 vocabulary: ai agents,
+  agentic, mcp, voice ai, claude) + `v2_country_templates` (4 × 29).
+  Never re-runs the original template keys.
+- `local` reads `local_groups` — local-language templates (de/es/pt/fr/
+  nl/pl/sv/da/no/fi) for already-covered countries. The Apify actor takes
+  ONE `languageCode` per run, so each language group is its own actor run
+  (still one run per language, not per query). Failures are isolated per
+  language: an error run-row is recorded and the loop continues.
+- Both new modes use `maxPagesPerQuery=10` (they mix in unquoted
+  templates that would otherwise paginate to Google's page-30-40
+  "omitted results" wall and burn credits).
+- Recovery: `python tools/resume_persist_dataset.py <dataset_id> --mode
+  v2` or `--mode local --language de` (one dataset = one language).
+- Cost: v2 ≈ 142 credits, local ≈ 121 credits across 10 runs —
+  **~$2.50-4.00 total** including deeper pagination on unquoted queries.
+- Console note on Windows: run with `PYTHONUTF8=1` (or
+  `PYTHONIOENCODING=utf-8`) — local-language queries hit cp1251 encode
+  errors in `--dry-run` printing otherwise.
+
 ## Schedule
 **On-demand only.** Same queries on the same day return the same SERP —
 a cron would just burn Apify credits. Trigger a run manually via the
@@ -108,8 +135,48 @@ either additions to `_NON_AGENCY_DOMAINS` or trust in the downstream
 classifier to drop them. Prefer the classifier unless a specific
 non-agency keeps reappearing.
 
-## Phase 2 channels (not in MVP)
-Vendor partner directories (n8n, Make, Zapier, Airtable, Bubble, Webflow,
-Retool), Clutch, Sortlist, GoodFirms, LinkedIn company search, GitHub
-organisation search. Build these only after the MVP pipeline proves its
-signal-to-noise ratio on Google search alone.
+## Channel: vendor partner directories (implemented 2026-06-12)
+
+`tools/discover_partner_directories.py` — free direct scraping, no Apify.
+Agencies in a vendor's partner directory are pre-qualified on tool
+alignment; the channel name itself is the signal (`agency_sources.channel`).
+`specialization=[vendor]` is also set on insert as a classifier hint, but
+note enrichment later **overwrites** that column from site content — the
+durable signal is the sources row.
+
+```bash
+python tools/discover_partner_directories.py --source n8n --dry-run --max 5
+python tools/discover_partner_directories.py --source all   # cheap-first order
+```
+
+| source | entry point | how it works | volume (2026-06) |
+|---|---|---|---|
+| n8n | experts.n8n.io | PartnerPage SaaS, SSR; `?page=N`; website = `a[data-test-website-button]` on profile | 45 |
+| airtable | ecosystem.airtable.com/consultants | same PartnerPage markup | 64 |
+| zapier | zapier.com/partnerdirectory | same PartnerPage markup; profiles expose service *Regions* only, so country stays NULL | 448 |
+| make | make.com/en/partners-directory | Cloudflare rejects httpx at TLS level → every request is an in-page `fetch()` in headless Chromium; unfiltered hidden API paginates ALL tiers (`tiers` filter needs repeated params, comma-joined = 400); website only in profile RSC payload (`RSC: 1` header) | 533 |
+| webflow | webflow.com/certified-partners/browse | SSR; seeded pagination `?<seed>_page=N` — seed parsed from page-1 links (rotates on republish); pagination shows only neighbours → walk until a page adds 0 new profiles; website in embedded `"website":"…"` JSON | ~1,770 |
+
+**Dropped (verified infeasible 2026-06-12):**
+- **retool** — no public directory (`/agencies`, `/partners` are marketing
+  pages; partners.retool.com is an internal login). Covered by the
+  `"retool agency"` / `"retool developers"` v2 SERP templates.
+- **bubble** — bubble.io/agencies renders an experts-directory of opaque
+  Bubble-app divs: no profile links, no external websites; leads route
+  through Bubble's internal Hire/Contact broker. Covered by the
+  `"bubble development agency"` v2 SERP template.
+
+Operational learnings:
+- PartnerPage (n8n/zapier/airtable) shares identical markup — one generic
+  scraper, config-driven.
+- Multi-location profiles list HQ first → `_country_from_text` takes the
+  earliest country match, not the longest.
+- Local DNS intermittently fails (`getaddrinfo failed`) — `_get` retries
+  once after 2s; the shared persist path resets the Supabase client on
+  httpx errors (same HTTP/2 bug as Apify runs).
+- Fully re-runnable for free: insert guard skips existing agencies,
+  re-runs only append duplicate `agency_sources` rows (accepted).
+
+## Other Phase 2 channels (still not built)
+Clutch, Sortlist, GoodFirms, LinkedIn company search, GitHub organisation
+search.
