@@ -28,6 +28,7 @@ from discover_google_search import (
     _dedup_by_domain,
     _persist,
     _build_queries,
+    _build_local_batches,
     _load_config,
     _record_run,
 )
@@ -46,15 +47,26 @@ def main() -> None:
     parser.add_argument("dataset_id", help="Apify dataset ID (e.g. G7mkP0kx4XvURngl8)")
     parser.add_argument(
         "--mode",
-        choices=["countries", "worldwide", "cities"],
+        choices=["countries", "worldwide", "cities", "v2", "local"],
         required=True,
         help="Query mode used for the original run (for country_code map)",
     )
     parser.add_argument("--country", help="Country filter used for the original run")
+    parser.add_argument(
+        "--language",
+        help="local mode: language of the original run (one dataset = one language)",
+    )
     args = parser.parse_args()
 
     cfg = _load_config()
-    pairs = _build_queries(cfg, mode=args.mode, country_filter=args.country)
+    if args.mode == "local":
+        if not args.language:
+            parser.error("--mode local requires --language (one Apify run = one language)")
+        batches = _build_local_batches(cfg, language_filter=args.language,
+                                       country_filter=args.country)
+        pairs = [p for _, batch in batches for p in batch]
+    else:
+        pairs = _build_queries(cfg, mode=args.mode, country_filter=args.country)
     query_country_map = {q: c for q, c in pairs}
 
     raw = fetch_dataset(args.dataset_id)

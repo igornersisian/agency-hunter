@@ -79,5 +79,181 @@
     {"city": "Austin", "country_code": "US"},
     {"city": "Miami", "country_code": "US"}
   ],
-  "language": "en"
+  "language": "en",
+  "_comment_v2": "Round-3 templates (2026-06): fresh 2025-26 vocabulary (ai agents, agentic, mcp, voice ai). Run with --mode v2 only — never re-runs the original templates above. Mix of hard-quoted (precision, ~8-11 results cap) and unquoted (Google paginates deeper).",
+  "v2_worldwide_templates": [
+    "\"ai agents agency\"",
+    "\"ai agent development company\"",
+    "\"ai agent development\" agency",
+    "\"agentic automation\" agency",
+    "\"agentic ai\" consulting",
+    "ai agent integration partner",
+    "agentic workflow automation company",
+    "\"voice ai agency\"",
+    "\"voice agent development\"",
+    "voice ai automation agency",
+    "\"mcp integration\" agency",
+    "\"mcp server development\"",
+    "\"claude integration\" agency",
+    "\"anthropic claude\" consulting",
+    "\"llm consultancy\"",
+    "\"llm integration\" consulting",
+    "\"rag chatbot\" agency",
+    "\"ai chatbot agency\"",
+    "\"custom gpt development\"",
+    "\"openai api integration\" agency",
+    "\"supabase development agency\"",
+    "\"retool agency\"",
+    "\"retool developers\"",
+    "\"bubble development agency\"",
+    "\"airtable consulting\" agency",
+    "hire ai automation agency"
+  ],
+  "v2_country_templates": [
+    "\"ai agents\" agency \"{country_name}\"",
+    "\"ai agent development\" \"{country_name}\"",
+    "\"voice ai\" agency \"{country_name}\"",
+    "ai automation agency {country_name}"
+  ],
+  "_comment_local": "Local-language templates for already-covered countries. One Apify run per language (the actor takes a single languageCode per run). Run with --mode local, optionally --language de.",
+  "local_groups": [
+    {
+      "language": "de",
+      "countries": [
+        {"code": "DE", "name": "Deutschland"},
+        {"code": "AT", "name": "Österreich"},
+        {"code": "CH", "name": "Schweiz"}
+      ],
+      "templates": [
+        "\"KI Agentur\" {country_name}",
+        "\"KI Beratung\" {country_name}",
+        "\"Automatisierungsagentur\" {country_name}",
+        "\"KI Automatisierung\" Agentur {country_name}",
+        "\"Prozessautomatisierung\" Agentur {country_name}",
+        "\"n8n Agentur\" {country_name}",
+        "\"Chatbot Agentur\" {country_name}",
+        "KI Automatisierungsagentur {country_name}"
+      ]
+    },
+    {
+      "language": "es",
+      "countries": [
+        {"code": "ES", "name": "España"},
+        {"code": "MX", "name": "México"},
+        {"code": "CO", "name": "Colombia"},
+        {"code": "AR", "name": "Argentina"},
+        {"code": "UY", "name": "Uruguay"}
+      ],
+      "templates": [
+        "\"agencia de automatización\" {country_name}",
+        "\"agencia de IA\" {country_name}",
+        "\"agencia de inteligencia artificial\" {country_name}",
+        "\"automatización de procesos\" agencia {country_name}",
+        "\"consultoría de IA\" {country_name}",
+        "\"agentes de IA\" agencia {country_name}",
+        "agencia automatización IA {country_name}"
+      ]
+    },
+    {
+      "language": "pt",
+      "countries": [
+        {"code": "BR", "name": "Brasil"},
+        {"code": "PT", "name": "Portugal"}
+      ],
+      "templates": [
+        "\"agência de automação\" {country_name}",
+        "\"agência de IA\" {country_name}",
+        "\"agência de inteligência artificial\" {country_name}",
+        "\"automação de processos\" agência {country_name}",
+        "\"consultoria de IA\" {country_name}",
+        "\"agentes de IA\" agência {country_name}",
+        "agência automação IA {country_name}"
+      ]
+    },
+    {
+      "language": "fr",
+      "countries": [
+        {"code": "BE", "name": "Belgique"},
+        {"code": "LU", "name": "Luxembourg"},
+        {"code": "CH", "name": "Suisse"},
+        {"code": "CA", "name": "Canada"}
+      ],
+      "templates": [
+        "\"agence IA\" {country_name}",
+        "\"agence d'intelligence artificielle\" {country_name}",
+        "\"agence d'automatisation\" {country_name}",
+        "\"automatisation IA\" agence {country_name}",
+        "\"consultant IA\" {country_name}",
+        "agence automatisation intelligence artificielle {country_name}"
+      ]
+    },
+    {
+      "language": "nl",
+      "countries": [
+        {"code": "NL", "name": "Nederland"},
+        {"code": "BE", "name": "België"}
+      ],
+      "templates": [
+        "\"AI bureau\" {country_name}",
+        "\"automatiseringsbureau\" {country_name}",
+        "\"AI automatisering\" bureau {country_name}",
+        "\"AI consultancy\" {country_name}",
+        "\"chatbot bureau\" {country_name}"
+      ]
+    },
+    {
+      "language": "pl",
+      "countries": [
+        {"code": "PL", "name": "Polska"}
+      ],
+      "templates": [
+        "\"agencja AI\" {country_name}",
+        "\"agencja automatyzacji\" {country_name}",
+        "\"automatyzacja procesów\" agencja {country_name}",
+        "\"wdrożenia AI\" {country_name}",
+        "sztuczna inteligencja agencja wdrożenia {country_name}"
+      ]
+    },
+    {
+      "language": "sv",
+      "countries": [
+        {"code": "SE", "name": "Sverige"}
+      ],
+      "templates": [
+        "\"AI-byrå\" {country_name}",
+        "\"automationsbyrå\" {country_name}",
+        "\"AI-konsult\" byrå {country_name}"
+      ]
+    },
+    {
+      "language": "da",
+      "countries": [
+        {"code": "DK", "name": "Danmark"}
+      ],
+      "templates": [
+        "\"AI bureau\" {country_name}",
+        "\"automatiseringsbureau\" {country_name}"
+      ]
+    },
+    {
+      "language": "no",
+      "countries": [
+        {"code": "NO", "name": "Norge"}
+      ],
+      "templates": [
+        "\"AI-byrå\" {country_name}",
+        "\"automatiseringsbyrå\" {country_name}"
+      ]
+    },
+    {
+      "language": "fi",
+      "countries": [
+        {"code": "FI", "name": "Suomi"}
+      ],
+      "templates": [
+        "\"tekoälytoimisto\"",
+        "\"automaatiotoimisto\""
+      ]
+    }
+  ]
 }

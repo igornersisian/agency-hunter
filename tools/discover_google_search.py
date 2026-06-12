@@ -75,6 +75,9 @@ def _build_queries(cfg: dict, mode: str = "countries",
       countries  — cfg["templates"] × cfg["countries"]; country_code from country
       worldwide  — cfg["worldwide_templates"] as-is; country_code = "" (→ NULL in DB)
       cities     — cfg["city_templates"] × cfg["cities"]; country_code from city's hub
+      v2         — cfg["v2_worldwide_templates"] as-is + cfg["v2_country_templates"]
+                   × cfg["countries"]; round-3 vocabulary, never re-runs old keys
+      (local mode has per-language batches — see _build_local_batches)
     """
     pairs: list[tuple[str, str]] = []
 
@@ -98,10 +101,46 @@ def _build_queries(cfg: dict, mode: str = "countries",
                 q = tpl.format(city=city["city"])
                 pairs.append((q, city["country_code"]))
 
+    elif mode == "v2":
+        if not country_filter:
+            for tpl in cfg.get("v2_worldwide_templates", []):
+                pairs.append((tpl, ""))
+        for country in cfg["countries"]:
+            if country_filter and country["code"] != country_filter.upper():
+                continue
+            for tpl in cfg.get("v2_country_templates", []):
+                q = tpl.format(country_name=country["name"], country_code=country["code"])
+                pairs.append((q, country["code"]))
+
     else:
-        raise ValueError(f"Unknown mode: {mode!r} (expected countries|worldwide|cities)")
+        raise ValueError(f"Unknown mode: {mode!r} (expected countries|worldwide|cities|v2|local)")
 
     return pairs
+
+
+def _build_local_batches(cfg: dict, language_filter: str | None = None,
+                         country_filter: str | None = None) -> list[tuple[str, list[tuple[str, str]]]]:
+    """Expand cfg["local_groups"] into [(language, [(query, country_code), ...]), ...].
+
+    The Apify actor takes ONE languageCode per run, so local-language
+    queries are grouped by language and each group becomes its own actor
+    run. A --country filter applies within groups (e.g. CH hits both the
+    de and fr groups)."""
+    batches: list[tuple[str, list[tuple[str, str]]]] = []
+    for group in cfg.get("local_groups", []):
+        lang = group["language"]
+        if language_filter and lang != language_filter.lower():
+            continue
+        pairs: list[tuple[str, str]] = []
+        for country in group["countries"]:
+            if country_filter and country["code"] != country_filter.upper():
+                continue
+            for tpl in group["templates"]:
+                q = tpl.format(country_name=country["name"], country_code=country["code"])
+                pairs.append((q, country["code"]))
+        if pairs:
+            batches.append((lang, pairs))
+    return batches
 
 
 def _run_apify(queries: list[str], language: str, max_pages: int = 50) -> list[dict]:
@@ -255,9 +294,15 @@ def _record_run(status: str, candidates_found: int, new_agencies: int,
 
 
 def discover(country: str | None = None, max_queries: int | None = None,
-             dry_run: bool = False, mode: str = "countries") -> list[dict]:
+             dry_run: bool = False, mode: str = "countries",
+             language: str | None = None) -> list[dict]:
     """Run one discovery pass. Returns the list of candidate dicts found."""
     cfg = _load_config()
+
+    if mode == "local":
+        return _discover_local(cfg, country=country, max_queries=max_queries,
+                               dry_run=dry_run, language=language)
+
     pairs = _build_queries(cfg, mode=mode, country_filter=country)
     if max_queries is not None:
         pairs = pairs[:max_queries]
@@ -268,11 +313,16 @@ def discover(country: str | None = None, max_queries: int | None = None,
     queries = [p[0] for p in pairs]
     query_country_map = {q: c for q, c in pairs}
 
+    # v2 mixes in unquoted templates that would otherwise paginate to
+    # Google's page-30-40 "omitted results" wall — cap depth for cost.
+    max_pages = 10 if mode == "v2" else 50
+
     logger.info(f"Running {len(queries)} queries through Apify...")
     try:
         raw = _run_apify(
             queries,
             language=cfg.get("language", "en"),
+            max_pages=max_pages,
         )
     except Exception as e:
         logger.error(f"Apify run failed: {e}")
@@ -300,6 +350,54 @@ def discover(country: str | None = None, max_queries: int | None = None,
     return candidates
 
 
+def _discover_local(cfg: dict, country: str | None = None,
+                    max_queries: int | None = None, dry_run: bool = False,
+                    language: str | None = None) -> list[dict]:
+    """Local-language discovery: one Apify run per language batch.
+
+    Failures are isolated per language (error run row + continue) so one
+    bad batch doesn't lose the others; replay a single language with
+    `resume_persist_dataset.py --mode local --language XX`."""
+    batches = _build_local_batches(cfg, language_filter=language, country_filter=country)
+    if not batches:
+        logger.warning("No local batches built — check local_groups and filters")
+        return []
+
+    all_candidates: list[dict] = []
+    for lang, pairs in batches:
+        if max_queries is not None:
+            pairs = pairs[:max_queries]
+        queries = [p[0] for p in pairs]
+        query_country_map = {q: c for q, c in pairs}
+
+        logger.info(f"[local/{lang}] Running {len(queries)} queries through Apify...")
+        try:
+            raw = _run_apify(queries, language=lang, max_pages=10)
+        except Exception as e:
+            logger.error(f"[local/{lang}] Apify run failed: {e}")
+            _record_run("error", 0, 0, error=str(e),
+                        metadata={"mode": "local", "language": lang, "queries": len(queries)})
+            continue
+
+        candidates = _dedup_by_domain(_flatten_serp(raw, query_country_map))
+        logger.info(f"[local/{lang}] → {len(candidates)} unique candidates after filter")
+
+        if dry_run:
+            print(json.dumps(candidates[:20], ensure_ascii=False, indent=2))
+            _record_run("success", len(candidates), 0,
+                        metadata={"dry_run": True, "mode": "local", "language": lang,
+                                  "queries": len(queries)})
+        else:
+            new_count, total_sources = _persist(candidates)
+            logger.info(f"[local/{lang}] Persisted: {new_count} new, {total_sources} source rows")
+            _record_run("success", candidates_found=len(candidates), new_agencies=new_count,
+                        metadata={"mode": "local", "language": lang, "queries": len(queries)})
+
+        all_candidates.extend(candidates)
+
+    return all_candidates
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Google search discovery via Apify")
     parser.add_argument("--country", help="Restrict to one ISO-3166 alpha-2 code (e.g. NZ)")
@@ -307,14 +405,19 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Print candidates, don't write DB")
     parser.add_argument(
         "--mode",
-        choices=["countries", "worldwide", "cities"],
+        choices=["countries", "worldwide", "cities", "v2", "local"],
         default="countries",
         help="Query-building strategy (default: countries — original behavior)",
+    )
+    parser.add_argument(
+        "--language",
+        help="local mode only: run a single language group (e.g. de, es)",
     )
     args = parser.parse_args()
 
     results = discover(country=args.country, max_queries=args.max,
-                       dry_run=args.dry_run, mode=args.mode)
+                       dry_run=args.dry_run, mode=args.mode,
+                       language=args.language)
     logger.info(f"Done. {len(results)} candidates total.")
 
 
