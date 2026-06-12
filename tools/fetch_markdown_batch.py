@@ -64,7 +64,16 @@ def _fetch_one(row: dict, backend: str) -> tuple[str, bool]:
         return agency_id, False
 
 
-def run(limit: int | None = None, workers: int = 10) -> dict:
+def run(limit: int | None = None, workers: int = 10, fast: bool = False) -> dict:
+    if fast:
+        # Scoring needs the marketing core, not the full crawl: homepage +
+        # about + services, 2 successful pages max. ~3-4x faster per agency
+        # than the default 12-path / 4-fetch enrichment crawl.
+        import enrich_agency
+        enrich_agency._PATHS = ["/", "/about", "/services"]
+        enrich_agency.MAX_FETCHES = 2
+        logger.info("FAST mode: paths=/,/about,/services max_fetches=2")
+
     sb = get_supabase()
     rows = _fetch_all_discovered(sb)
     if limit:
@@ -101,6 +110,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Batch-fetch cleaned markdown for discovered agencies.")
     ap.add_argument("--limit", type=int, default=None, help="Cap the number of agencies to process")
     ap.add_argument("--workers", type=int, default=10, help="Parallel fetch threads (default: 10)")
+    ap.add_argument("--fast", action="store_true",
+                    help="Scoring mode: homepage+about+services only, 2 pages max")
     args = ap.parse_args()
-    result = run(limit=args.limit, workers=args.workers)
+    result = run(limit=args.limit, workers=args.workers, fast=args.fast)
     print(f"Fetched: {result['success']}/{result['total']} (failed: {result['failed']})")
