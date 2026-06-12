@@ -155,9 +155,23 @@
       ]
     },
     {
-      "language": "pt",
+      "language": "pt-BR",
       "countries": [
-        {"code": "BR", "name": "Brasil"},
+        {"code": "BR", "name": "Brasil"}
+      ],
+      "templates": [
+        "\"agência de automação\" {country_name}",
+        "\"agência de IA\" {country_name}",
+        "\"agência de inteligência artificial\" {country_name}",
+        "\"automação de processos\" agência {country_name}",
+        "\"consultoria de IA\" {country_name}",
+        "\"agentes de IA\" agência {country_name}",
+        "agência automação IA {country_name}"
+      ]
+    },
+    {
+      "language": "pt-PT",
+      "countries": [
         {"code": "PT", "name": "Portugal"}
       ],
       "templates": [
