@@ -126,7 +126,8 @@ def _build_local_batches(cfg: dict, language_filter: str | None = None,
     batches: list[tuple[str, list[tuple[str, str]]]] = []
     for group in cfg.get("local_groups", []):
         lang = group["language"]
-        if language_filter and lang != language_filter.lower():
+        # case-insensitive: codes like pt-BR must match --language pt-br/pt-BR
+        if language_filter and lang.lower() != language_filter.lower():
             continue
         pairs: list[tuple[str, str]] = []
         for country in group["countries"]:
