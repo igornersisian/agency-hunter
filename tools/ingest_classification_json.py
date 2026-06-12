@@ -76,11 +76,19 @@ def _build_update(data: dict) -> dict:
     }
 
 
-def run(threshold: int = THRESHOLD_DEFAULT, dry_run: bool = False) -> dict:
+def run(threshold: int = THRESHOLD_DEFAULT, dry_run: bool = False,
+        archive: bool = False) -> dict:
+    """`archive=True` moves successfully ingested JSONs to
+    OUTPUT_DIR/ingested/ so repeated ingest passes during long scoring
+    runs only touch new files."""
     sb = get_supabase()
     if not OUTPUT_DIR.exists():
         logger.warning(f"{OUTPUT_DIR} does not exist — nothing to ingest")
         return {"ingested": 0, "qualified": 0, "rejected": 0, "errors": 0, "skipped": 0}
+
+    archive_dir = OUTPUT_DIR / "ingested"
+    if archive:
+        archive_dir.mkdir(exist_ok=True)
 
     files = sorted(OUTPUT_DIR.glob("*.json"))
     logger.info(f"Found {len(files)} classification JSONs (threshold={threshold})")
@@ -148,6 +156,8 @@ def run(threshold: int = THRESHOLD_DEFAULT, dry_run: bool = False) -> dict:
                 qualified += 1
             else:
                 rejected += 1
+            if archive:
+                jf.rename(archive_dir / jf.name)
         except Exception as e:
             logger.error(f"DB update failed for {agency_id}: {e}")
             errors += 1
@@ -170,6 +180,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Ingest sub-agent classification JSONs into Supabase.")
     ap.add_argument("--threshold", type=int, default=THRESHOLD_DEFAULT, help=f"Qualified cutoff (default: {THRESHOLD_DEFAULT})")
     ap.add_argument("--dry-run", action="store_true", help="List what would be ingested without writing")
+    ap.add_argument("--archive", action="store_true",
+                    help="Move ingested JSONs to ingested/ so re-runs only touch new files")
     args = ap.parse_args()
-    res = run(threshold=args.threshold, dry_run=args.dry_run)
+    res = run(threshold=args.threshold, dry_run=args.dry_run, archive=args.archive)
     print(f"Ingested: {res['ingested']} qualified={res['qualified']} rejected={res['rejected']} errors={res['errors']}")
