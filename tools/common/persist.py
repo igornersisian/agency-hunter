@@ -21,6 +21,7 @@ Candidate dict shape (see discover_google_search.CandidateRow):
 
 from __future__ import annotations
 
+import time
 import logging
 from datetime import datetime, timezone
 
@@ -73,13 +74,23 @@ def persist_candidates(candidates: list[dict]) -> tuple[int, int]:
         client.table("agency_sources").insert(source_row).execute()
         source_count += 1
 
+    # Local DNS intermittently fails (getaddrinfo) and HTTP/2 clients can
+    # die mid-loop — retry each candidate with backoff, rebuilding the
+    # client between attempts. A still-failing candidate after the last
+    # attempt aborts the run (datasets are replayable via resume tools).
+    backoffs = (0, 2, 5, 15)
     for c in candidates:
-        try:
-            _persist_one(sb, c)
-        except (httpx.HTTPError, httpx.LocalProtocolError) as e:
-            logger.warning(f"httpx error on {c['id']}: {e}. Resetting client and retrying.")
-            sb = reset_supabase()
-            _persist_one(sb, c)
+        for attempt, wait in enumerate(backoffs, 1):
+            if wait:
+                time.sleep(wait)
+                sb = reset_supabase()
+            try:
+                _persist_one(sb, c)
+                break
+            except (httpx.HTTPError, httpx.LocalProtocolError) as e:
+                logger.warning(f"httpx error on {c['id']} (attempt {attempt}/{len(backoffs)}): {e}")
+                if attempt == len(backoffs):
+                    raise
 
     return new_count, source_count
 
