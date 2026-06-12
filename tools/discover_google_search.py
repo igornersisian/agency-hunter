@@ -35,18 +35,15 @@ from __future__ import annotations
 import json
 import argparse
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from urllib.parse import urlparse
 
-import httpx
-
 from common.apify_runner import run_and_collect
 from common.domain_utils import canonical_domain, is_directory_domain
-from common.supabase_client import get_supabase, reset_supabase
+from common.persist import persist_candidates, record_discovery_run
 
 load_dotenv()
 
@@ -227,70 +224,15 @@ def _dedup_by_domain(candidates: list[dict]) -> list[dict]:
 
 
 def _persist(candidates: list[dict]) -> tuple[int, int]:
-    """Upsert into agency_agencies + always append an agency_sources row.
-
-    Returns (new_agencies, total_source_rows).
-    """
-    if not candidates:
-        return 0, 0
-
-    sb = get_supabase()
-    new_count = 0
-    source_count = 0
-
-    def _persist_one(client, c):
-        nonlocal new_count, source_count
-        agency_row = {
-            "id": c["id"],
-            "name": c["name"],
-            "domain": c["domain"],
-            "website_url": c["website_url"],
-            "country": c["country"] or None,
-            "short_description": c["short_description"] or None,
-            "status": "discovered",
-            "discovered_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        # Insert only if missing — never overwrite an already-classified row
-        existing = client.table("agency_agencies").select("id").eq("id", c["id"]).limit(1).execute()
-        if not existing.data:
-            client.table("agency_agencies").insert(agency_row).execute()
-            new_count += 1
-
-        source_row = {
-            "agency_id": c["id"],
-            "channel": CHANNEL,
-            "source_url": c["source_url"],
-            "raw_payload": c["raw_payload"],
-        }
-        client.table("agency_sources").insert(source_row).execute()
-        source_count += 1
-
-    for c in candidates:
-        try:
-            _persist_one(sb, c)
-        except (httpx.HTTPError, httpx.LocalProtocolError) as e:
-            logger.warning(f"httpx error on {c['id']}: {e}. Resetting client and retrying.")
-            sb = reset_supabase()
-            _persist_one(sb, c)
-
-    return new_count, source_count
+    """Thin wrapper over common.persist (kept for resume_persist_dataset
+    and recovery-script imports). Candidates carry source_channel=CHANNEL."""
+    return persist_candidates(candidates)
 
 
 def _record_run(status: str, candidates_found: int, new_agencies: int,
                 error: str | None = None, metadata: dict | None = None) -> None:
-    try:
-        get_supabase().table("agency_discovery_runs").insert({
-            "channel": CHANNEL,
-            "finished_at": datetime.now(timezone.utc).isoformat(),
-            "status": status,
-            "candidates_found": candidates_found,
-            "new_agencies": new_agencies,
-            "error_message": error,
-            "metadata": metadata or {},
-        }).execute()
-    except Exception as e:
-        logger.warning(f"Failed to record discovery run: {e}")
+    record_discovery_run(CHANNEL, status, candidates_found, new_agencies,
+                         error=error, metadata=metadata)
 
 
 def discover(country: str | None = None, max_queries: int | None = None,
