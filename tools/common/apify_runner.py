@@ -89,6 +89,30 @@ def _rotate_token(reason: str) -> bool:
     return True
 
 
+_TRANSIENT_ERRORS = (httpx.ConnectError, httpx.ReadError, httpx.ReadTimeout,
+                     httpx.ConnectTimeout, httpx.RemoteProtocolError)
+
+
+def _request_with_retry(method: str, url: str, **kwargs) -> httpx.Response:
+    """One-shot httpx request with backoff on transient network errors.
+
+    Local DNS intermittently fails (getaddrinfo) — without this, a single
+    blip on the actor-start POST kills the whole (otherwise free-to-retry)
+    language batch."""
+    backoffs = (0, 2, 5, 15)
+    for attempt, wait in enumerate(backoffs, 1):
+        if wait:
+            time.sleep(wait)
+        try:
+            return httpx.request(method, url, **kwargs)
+        except _TRANSIENT_ERRORS as e:
+            logger.warning(f"Transient {method} error for {url.split('?')[0]} "
+                           f"(attempt {attempt}/{len(backoffs)}): {e}")
+            if attempt == len(backoffs):
+                raise
+    raise AssertionError("unreachable")
+
+
 def _is_credit_error(resp: httpx.Response) -> bool:
     """True if the response indicates the current token can't be used."""
     if resp.status_code not in (401, 402, 403, 429):
@@ -114,7 +138,7 @@ def run_actor(actor_id: str, actor_input: dict) -> str:
         logger.info(
             f"Starting Apify actor {actor_id} (token #{_current_idx + 1})..."
         )
-        resp = httpx.post(url, json=actor_input, params=params, timeout=30)
+        resp = _request_with_retry("POST", url, json=actor_input, params=params, timeout=30)
 
         if resp.status_code >= 400:
             if _is_credit_error(resp):
@@ -197,7 +221,7 @@ def fetch_dataset(dataset_id: str) -> list[dict]:
     while True:
         params = {"token": _token(), "format": "json", "clean": "true"}
         logger.info(f"Downloading Apify dataset {dataset_id}...")
-        resp = httpx.get(url, params=params, timeout=120)
+        resp = _request_with_retry("GET", url, params=params, timeout=120)
 
         if resp.status_code >= 400:
             if _is_credit_error(resp):
