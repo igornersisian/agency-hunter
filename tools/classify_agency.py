@@ -35,14 +35,22 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-from common.supabase_client import get_supabase
+from common.supabase_client import get_supabase, reset_supabase
 from common.llm import chat_completion
 from common.profile import get_profile, get_agency_config
 
 logger = logging.getLogger(__name__)
+
+# Raw-text scoring from pre-fetched markdown (skips the enrichment LLM call).
+# Cap matches classify_subagent_prep.RAW_TEXT_CAP so both paths feed the
+# model the same evidence budget.
+MD_DIR = Path(".tmp/enrich_md")
+RAW_TEXT_CAP = 12000
 
 # Sub-score caps — sum to 100
 _CAPS = {
@@ -388,6 +396,145 @@ def _classify_worker(row: dict, profile: dict, target_countries: list[str],
         return False
 
 
+def _db_retry(fn, attempts: int = 4):
+    """Run a Supabase op with reset+backoff retry for the httpx HTTP/2
+    LocalProtocolError that bites long-lived clients mid-batch."""
+    backoffs = [0, 2, 5, 15]
+    last = None
+    for i in range(attempts):
+        if backoffs[i]:
+            time.sleep(backoffs[i])
+        try:
+            return fn(get_supabase())
+        except Exception as e:
+            last = e
+            logger.warning(f"DB op failed ({i + 1}/{attempts}): {e}; resetting client")
+            reset_supabase()
+    raise last
+
+
+def _fetch_all_discovered(sb) -> list[dict]:
+    """Paginated fetch of all status='discovered' rows (PostgREST caps
+    single SELECTs at 1000)."""
+    page_size = 1000
+    offset = 0
+    out: list[dict] = []
+    while True:
+        chunk = (
+            sb.table("agency_agencies")
+            .select("id,country")
+            .eq("status", "discovered")
+            .range(offset, offset + page_size - 1)
+            .execute()
+            .data
+            or []
+        )
+        out.extend(chunk)
+        if len(chunk) < page_size:
+            return out
+        offset += page_size
+
+
+def _classify_worker_from_md(row: dict, profile: dict,
+                             target_countries: list[str], threshold: int) -> str:
+    """Score one discovered agency from its pre-fetched markdown file.
+
+    Returns one of: 'qualified', 'rejected', 'no_md', 'error'.
+    """
+    agency_id = row["id"]
+    now = datetime.now(timezone.utc).isoformat()
+
+    if is_country_blacklisted(row.get("country")):
+        update = {
+            "status": "rejected",
+            "fit_score": 0,
+            "fit_reasoning": f"Auto-rejected: country {row.get('country')} is blacklisted.",
+            "fit_breakdown": {"auto_reject": "country_blacklist", "country": row.get("country")},
+            "last_classified_at": now,
+            "updated_at": now,
+        }
+        _db_retry(lambda sb: sb.table("agency_agencies").update(update).eq("id", agency_id).execute())
+        return "rejected"
+
+    md_path = MD_DIR / f"{agency_id}.md"
+    if not md_path.exists() or md_path.stat().st_size == 0:
+        return "no_md"
+
+    raw = md_path.read_text(encoding="utf-8", errors="ignore")[:RAW_TEXT_CAP]
+    try:
+        result = classify_one(agency_id, {}, profile, target_countries, raw_website_text=raw)
+    except Exception as e:
+        logger.error(f"Classification failed for {agency_id}: {e}")
+        return "error"
+
+    new_status = "qualified" if result["fit_score"] >= threshold else "rejected"
+    update = {
+        **result,
+        "status": new_status,
+        "last_classified_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _db_retry(lambda sb: sb.table("agency_agencies").update(update).eq("id", agency_id).execute())
+    logger.info(f"Classified {agency_id}: {result['fit_score']} -> {new_status}")
+    return new_status
+
+
+def run_from_md(limit: int | None = None, workers: int = 8,
+                dry_run: bool = False) -> dict:
+    """Flex-tier classification of status='discovered' rows straight from
+    the markdown fetched into .tmp/enrich_md/ — skips the enrichment LLM
+    call (raw text is classify_one's primary evidence anyway). Rows with
+    no markdown file are skipped and left 'discovered' for a later fetch."""
+    profile = get_profile() or {}
+    cfg = get_agency_config()
+    threshold = cfg["agency_fit_threshold"]
+    target_countries = cfg["agency_target_countries"]
+
+    sb = get_supabase()
+    rows = _fetch_all_discovered(sb)
+    total_discovered = len(rows)
+
+    if limit:
+        # For a smoke test, prefer rows that actually have markdown so the
+        # sample does real scoring work rather than counting no_md skips.
+        rows = [r for r in rows
+                if (MD_DIR / f"{r['id']}.md").exists()
+                and (MD_DIR / f"{r['id']}.md").stat().st_size > 0][:limit]
+
+    logger.info(f"{total_discovered} discovered rows; processing {len(rows)} "
+                f"(workers={workers}, threshold={threshold})")
+
+    if dry_run:
+        have_md = sum(1 for r in rows
+                      if (MD_DIR / f"{r['id']}.md").exists()
+                      and (MD_DIR / f"{r['id']}.md").stat().st_size > 0)
+        logger.info(f"[dry-run] {have_md}/{len(rows)} have markdown ready")
+        return {"qualified": 0, "rejected": 0, "no_md": len(rows) - have_md,
+                "error": 0, "total": len(rows)}
+
+    counts = {"qualified": 0, "rejected": 0, "no_md": 0, "error": 0}
+    done = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_classify_worker_from_md, r, profile, target_countries, threshold): r
+            for r in rows
+        }
+        for future in as_completed(futures):
+            done += 1
+            try:
+                res = future.result()
+            except Exception as e:
+                logger.error(f"Worker exception for {futures[future]['id']}: {e}")
+                res = "error"
+            counts[res] = counts.get(res, 0) + 1
+            if done % 50 == 0:
+                logger.info(f"Progress: {done}/{len(rows)} {counts}")
+
+    counts["total"] = len(rows)
+    logger.info(f"Done: {counts}")
+    return counts
+
+
 def run_batch(limit: int = 20, dry_run: bool = False, workers: int = DEFAULT_WORKERS) -> int:
     """Classify up to `limit` agencies currently in `status='enriched'`.
     Uses `workers` parallel threads for faster throughput.
@@ -441,10 +588,20 @@ def run_batch(limit: int = 20, dry_run: bool = False, workers: int = DEFAULT_WOR
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     ap = argparse.ArgumentParser(description="Classify enriched agencies for fit.")
-    ap.add_argument("--limit", type=int, default=20, help="Max rows to process (default: 20)")
+    ap.add_argument("--limit", type=int, default=None, help="Max rows to process (default: 20 for enriched path, all for --from-md)")
     ap.add_argument("--dry-run", action="store_true", help="List rows that would be classified and exit")
     ap.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help=f"Parallel threads (default: {DEFAULT_WORKERS})")
+    ap.add_argument("--from-md", action="store_true",
+                    help="Flex-tier scoring of status='discovered' rows straight from "
+                         ".tmp/enrich_md markdown (skips enrichment; raw text only)")
     args = ap.parse_args()
-    n = run_batch(limit=args.limit, dry_run=args.dry_run, workers=args.workers)
-    if not args.dry_run:
-        print(f"Classified {n} agencies.")
+
+    if args.from_md:
+        res = run_from_md(limit=args.limit, workers=args.workers, dry_run=args.dry_run)
+        print(f"From-md: qualified={res['qualified']} rejected={res['rejected']} "
+              f"no_md={res['no_md']} error={res['error']} total={res['total']}")
+    else:
+        n = run_batch(limit=args.limit if args.limit is not None else 20,
+                      dry_run=args.dry_run, workers=args.workers)
+        if not args.dry_run:
+            print(f"Classified {n} agencies.")
